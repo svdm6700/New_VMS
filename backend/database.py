@@ -13,8 +13,10 @@ from sqlalchemy import (
     Text,
     DateTime,
     ForeignKey,
-    Index
+    Index,
+    text
 )
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 # Ensure backend directory is in sys.path
@@ -181,8 +183,109 @@ class VoterRecordModel(Base):
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
+def ensure_database_exists():
+    """
+    Connects to the default PostgreSQL maintenance database ('postgres')
+    and creates the target database (settings.DB_NAME) with UTF-8 encoding
+    if it does not already exist.
+    """
+    try:
+        target_url = make_url(settings.database_url)
+        target_db = target_url.database or settings.DB_NAME
+
+        # Admin connection to default maintenance db 'postgres'
+        admin_url = target_url.set(database="postgres")
+        admin_engine = create_engine(
+            admin_url,
+            isolation_level="AUTOCOMMIT",
+            connect_args={"client_encoding": "utf8"}
+        )
+        with admin_engine.connect() as conn:
+            query = text("SELECT 1 FROM pg_database WHERE datname = :dbname")
+            exists = conn.execute(query, {"dbname": target_db}).scalar()
+            if not exists:
+                print(f"[VMS Database] Target database '{target_db}' does not exist on PostgreSQL.")
+                print(f"[VMS Database] Automatically creating database '{target_db}' with UTF-8 encoding...")
+                sanitized_name = target_db.replace('"', '""')
+                conn.execute(text(f'CREATE DATABASE "{sanitized_name}" WITH ENCODING \'UTF8\' TEMPLATE template1'))
+                print(f"[VMS Database] Database '{target_db}' successfully created.")
+            else:
+                print(f"[VMS Database] Database '{target_db}' verified (exists).")
+        admin_engine.dispose()
+    except Exception as e:
+        print(f"[VMS Database] Notice during database existence verification: {e}")
+
+def ensure_tables_exist():
+    """Ensure all SQLAlchemy metadata tables and indexes are created automatically."""
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("[VMS Database] Tables verified/created successfully.")
+    except Exception as e:
+        print(f"[VMS Database Error] Failed to create tables: {e}")
+        raise
+
+def ensure_default_seed():
+    """Automatically seed default roles and initial admin user if not present."""
+    try:
+        from backend.security import hash_password
+    except ImportError:
+        try:
+            from security import hash_password
+        except Exception:
+            return
+
+    db = SessionLocal()
+    try:
+        # Check / create roles
+        roles_to_seed = [
+            ("admin", "Administrator with full system privileges"),
+            ("user", "Standard User")
+        ]
+        for role_name, desc in roles_to_seed:
+            existing = db.query(RoleModel).filter(RoleModel.role_name == role_name).first()
+            if not existing:
+                db.add(RoleModel(role_name=role_name, description=desc))
+                print(f"[VMS Database] Created default role: {role_name}")
+        db.commit()
+
+        # Check / create initial admin account
+        admin_user = db.query(UserModel).filter(
+            (UserModel.username == settings.INITIAL_ADMIN_USERNAME) | 
+            (UserModel.email == settings.INITIAL_ADMIN_EMAIL)
+        ).first()
+
+        if not admin_user:
+            admin_user = UserModel(
+                full_name=settings.INITIAL_ADMIN_NAME,
+                email=settings.INITIAL_ADMIN_EMAIL,
+                username=settings.INITIAL_ADMIN_USERNAME,
+                password_hash=hash_password(settings.INITIAL_ADMIN_PASSWORD),
+                role="admin",
+                is_active=True,
+                created_at=utcnow(),
+                updated_at=utcnow()
+            )
+            db.add(admin_user)
+            db.commit()
+            print(f"[VMS Database] Created initial admin user: username='{settings.INITIAL_ADMIN_USERNAME}'")
+    except Exception as e:
+        db.rollback()
+        print(f"[VMS Database Warning] Note during seed check: {e}")
+    finally:
+        db.close()
+
 def init_db():
-    Base.metadata.create_all(bind=engine)
+    """
+    Main database initializer:
+    1. Automatically creates database if it does not exist.
+    2. Automatically creates all tables and indexes if they do not exist.
+    3. Automatically seeds initial roles and admin user if they do not exist.
+    """
+    print(f"[VMS Database] Initializing database '{settings.DB_NAME}' on {settings.DB_HOST}:{settings.DB_PORT}...")
+    ensure_database_exists()
+    ensure_tables_exist()
+    ensure_default_seed()
+    print("[VMS Database] Database and tables are ready.")
 
 def get_db():
     db = SessionLocal()
@@ -190,3 +293,32 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# Automatically ensure database and tables exist on module load
+try:
+    init_db()
+except Exception as _e:
+    print(f"[VMS Database] Deferred initial auto-creation on module load: {_e}")
+
+if __name__ == "__main__":
+    from sqlalchemy import inspect
+    print("=" * 60)
+    print("VMS Database Initialization & Status Check")
+    print("=" * 60)
+    init_db()
+    
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    print(f"[VMS Database] Verified Tables in '{settings.DB_NAME}': {tables}")
+    
+    _db = SessionLocal()
+    try:
+        user_cnt = _db.query(UserModel).count()
+        doc_cnt = _db.query(DocumentModel).count()
+        voter_cnt = _db.query(VoterRecordModel).count()
+        print(f"[VMS Database] Users count: {user_cnt}")
+        print(f"[VMS Database] Documents count: {doc_cnt}")
+        print(f"[VMS Database] Extracted Voter Records count: {voter_cnt}")
+    finally:
+        _db.close()
+    print("=" * 60)

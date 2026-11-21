@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from typing import List, Union
+from typing import List, Union, Optional
 from urllib.parse import quote_plus
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
