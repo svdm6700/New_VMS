@@ -47,3 +47,4 @@ Open http://localhost:5173
 Pages with at least 35 embedded text characters use PyMuPDF; other pages use Tesseract OCR. pdfplumber detects digital tables. Ollama structures tables and paragraphs and translates them.
 This starter processes synchronously, so large PDFs may take several minutes. A scanned page with complex table geometry needs layout-aware OCR/table recognition (for example PaddleOCR PP-Structure). Verify OCR and AI output against source documents. Add background jobs, authentication, storage, rate limits and malware scanning before public production deployment. CORS is configured for localhost:5173.
 "# VMS" 
+"# VMS" 
