@@ -1,0 +1,159 @@
+export interface DocumentItem {
+  id: string;
+  filename: string;
+  original_filename?: string;
+  stored_file_path?: string;
+  file_size: number;
+  total_pages?: number;
+  page_count: number;
+  text_pages?: number;
+  ocr_pages?: number;
+  processing_type?: string;
+  status: 'completed' | 'processing' | 'failed' | 'uploaded' | 'pending';
+  processing_status?: 'completed' | 'processing' | 'failed' | 'uploaded' | 'pending';
+  created_at: string;
+  uploaded_at?: string;
+  processed_at?: string | null;
+  error?: string;
+  processing_error?: string | null;
+  records_count?: number;
+  use_ai?: boolean;
+  uploaded_by?: number | null;
+  uploader_name?: string;
+
+  // Manual Location Details
+  district?: string;
+  constituency?: string;
+  area?: string;
+  ward_number?: string;
+}
+
+export interface VoterRecord {
+  id: number;
+  document_id: string;
+  serial_no: string;
+  electoral_roll_no: string;
+  voter_name: string;
+  relation_type: string;
+  relation_name: string;
+  age: string;
+  gender: string;
+  house_no: string;
+  voter_id: string;
+  source_page: number;
+  ocr_confidence?: number | null;
+  created_at: string;
+  updated_at: string;
+
+  // Associated Document Location Details
+  district?: string;
+  constituency?: string;
+  area?: string;
+  ward_number?: string;
+}
+
+export interface VoterRecordsResponse {
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+  document_id?: string;
+  document_name?: string;
+  district?: string;
+  constituency?: string;
+  area?: string;
+  ward_number?: string;
+  records: VoterRecord[];
+}
+
+export interface PageItem {
+  page: number;
+  method: string;
+  text: string;
+}
+
+export interface ParagraphItem {
+  Page: number;
+  "Heading (Telugu)"?: string;
+  "Heading (English)"?: string;
+  "Telugu paragraph"?: string;
+  "English translation"?: string;
+}
+
+export interface TableRowTe {
+  Page: number;
+  Table: string;
+  Row: number;
+  "Telugu / Original": string;
+  English: string;
+}
+
+export interface TableRowEn {
+  Page: number;
+  Table: string;
+  Row: number;
+  "English / Translation": string;
+}
+
+export interface ValidationInfo {
+  expected_pages: number;
+  processed_pages: number;
+  pages_without_text: number[];
+  review_notes: string[];
+}
+
+export interface DocumentMetadata {
+  filename: string;
+  page_count: number;
+  text_pages?: number;
+  ocr_pages?: number;
+  records_count?: number;
+  processing_status?: string;
+  processing_error?: string | null;
+
+  // Location fields
+  district?: string;
+  constituency?: string;
+  area?: string;
+  ward_number?: string;
+}
+
+export interface ExtractedField {
+  field_name: string;
+  value: string;
+}
+
+export interface ExtractedRecord {
+  record_id: number;
+  page: number;
+  title?: string;
+  fields: ExtractedField[];
+}
+
+export interface DocumentResult {
+  id?: string;
+  metadata: DocumentMetadata;
+  pages: PageItem[];
+  table_rows_te: TableRowTe[];
+  table_rows_en: TableRowEn[];
+  paragraphs: ParagraphItem[];
+  records?: ExtractedRecord[];
+  validation: ValidationInfo;
+
+  // Location fields
+  district?: string;
+  constituency?: string;
+  area?: string;
+  ward_number?: string;
+}
+
+export interface ProcessOptions {
+  district?: string;
+  constituency?: string;
+  area?: string;
+  ward_number?: string;
+  ollamaUrl?: string;
+  modelName?: string;
+  useAi?: boolean;
+  onUploadProgress?: (progress: number) => void;
+}

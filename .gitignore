@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Builds
+dist/
+build/
+
+# Environments (Do NOT commit sensitive env files)
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+
+# Temporary and upload storage
+storage/uploads/*
+storage/temp/*
+storage/exports/*
+!storage/uploads/.gitkeep
+!storage/temp/.gitkeep
+!storage/exports/.gitkeep
+
+# Logs
+logs/
+*.log
+
+# Databases & local caches
+*.db
+*.sqlite
+*.sqlite3
+backend/data/*.db
+
+# OS Files
+.DS_Store
+Thumbs.db
