@@ -14,11 +14,15 @@ APP_DIR = CORE_DIR.parent
 BACKEND_DIR = APP_DIR.parent
 PROJECT_ROOT = BACKEND_DIR.parent
 
-ENV_FILE_PATH = BACKEND_DIR / ".env"
+ENV_FILE_PATHS = (
+    str(BACKEND_DIR / ".env"),
+    str(PROJECT_ROOT / ".env"),
+    ".env",
+)
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(ENV_FILE_PATH) if ENV_FILE_PATH.exists() else ".env",
+        env_file=ENV_FILE_PATHS,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False
@@ -36,6 +40,7 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
 
     # 2. PostgreSQL Connection (psycopg 3)
+    DATABASE_URL: Optional[str] = None
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
     DB_NAME: str = "vms_database"
@@ -112,11 +117,27 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        """Construct PostgreSQL SQLAlchemy database URL using psycopg 3 driver."""
+        """Construct or return PostgreSQL SQLAlchemy database URL using psycopg 3 driver."""
+        if self.DATABASE_URL and self.DATABASE_URL.strip():
+            url = self.DATABASE_URL.strip()
+            if url.startswith("postgresql://"):
+                url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+            elif url.startswith("postgres://"):
+                url = url.replace("postgres://", "postgresql+psycopg://", 1)
+            return url
         encoded_pass = quote_plus(self.DB_PASSWORD)
         return (
             f"postgresql+psycopg://{self.DB_USER}:{encoded_pass}@"
             f"{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        )
+
+    @property
+    def admin_database_url(self) -> str:
+        """Connection URL to maintenance 'postgres' database for auto DB creation."""
+        encoded_pass = quote_plus(self.DB_PASSWORD)
+        return (
+            f"postgresql+psycopg://{self.DB_USER}:{encoded_pass}@"
+            f"{self.DB_HOST}:{self.DB_PORT}/postgres"
         )
 
     @property
