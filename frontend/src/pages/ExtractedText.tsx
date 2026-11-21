@@ -15,9 +15,9 @@ export const ExtractedText: React.FC = () => {
         <EmptyState
           icon={FileText}
           title="No document selected"
-          description="Select a document from your repository or upload a new Telugu PDF to view extracted paragraphs and translations."
+          description="Select a document from your repository or upload a new voter document to view extracted paragraphs and content."
           action={{
-            label: 'Upload PDF',
+            label: 'Upload Voter Document',
             onClick: () => navigate('/upload'),
           }}
         />

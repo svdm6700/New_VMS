@@ -41,7 +41,7 @@ export const PDFReader: React.FC = () => {
         <EmptyState
           icon={BookOpen}
           title="No document selected"
-          description="Select an existing document from your repository or upload a new Telugu PDF to view it in the Split Reader."
+          description="Select an existing document from your repository or upload a new voter document to view it in the Split Reader."
           action={{
             label: 'Go to Upload',
             onClick: () => navigate('/upload'),

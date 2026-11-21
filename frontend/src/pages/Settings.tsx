@@ -193,16 +193,16 @@ export const Settings: React.FC = () => {
       {/* Application Info Card */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-xs">
         <div className="flex items-start gap-3">
-          <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400">
-            <Info className="w-5 h-5" />
+          <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 font-bold text-xs">
+            VMS
           </div>
           <div className="space-y-1 text-xs">
-            <h4 className="font-bold text-slate-900 dark:text-slate-100">About Telugu PDF Reader Pro</h4>
+            <h4 className="font-bold text-slate-900 dark:text-slate-100">About VMS - Voter Management System</h4>
             <p className="text-slate-500 dark:text-slate-400 leading-relaxed">
-              Version 1.2.0 • React 18, TypeScript, Tailwind CSS, Python FastAPI, PyMuPDF, pdfplumber, Tesseract OCR, and Ollama LLM.
+              Version 1.0.0 • React 18, TypeScript, Tailwind CSS, Python FastAPI, PostgreSQL 16+ (psycopg 3), SQLAlchemy ORM, Alembic, and Tesseract OCR.
             </p>
             <p className="text-[11px] text-slate-400 pt-1">
-              Engineered for seamless extraction of Telugu Unicode scripts and complex tabular layouts.
+              Smart Voter Data Extraction & Management System · Engineered for seamless extraction of Telugu Unicode scripts, complex electoral rolls, and location mapping.
             </p>
           </div>
         </div>

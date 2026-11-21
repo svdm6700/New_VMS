@@ -27,9 +27,9 @@ export const Tables: React.FC = () => {
         <EmptyState
           icon={Table2}
           title="No document selected"
-          description="Select a document or upload a new Telugu PDF with digital or scanned tables."
+          description="Select a document or upload a voter document with digital or scanned tables."
           action={{
-            label: 'Upload PDF',
+            label: 'Upload Voter Document',
             onClick: () => navigate('/upload'),
           }}
         />

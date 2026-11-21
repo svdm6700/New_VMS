@@ -15,9 +15,9 @@ export const OCRResults: React.FC = () => {
         <EmptyState
           icon={ScanEye}
           title="No document selected"
-          description="Select a document or upload a scanned Telugu PDF to view OCR recognition results."
+          description="Select a document or upload a scanned voter document to view OCR recognition results."
           action={{
-            label: 'Upload Scanned PDF',
+            label: 'Upload Voter Document',
             onClick: () => navigate('/upload'),
           }}
         />

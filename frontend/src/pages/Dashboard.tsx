@@ -43,13 +43,13 @@ export const Dashboard: React.FC = () => {
         <div className="relative z-10 max-w-2xl">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/15 backdrop-blur-md text-[11px] font-semibold tracking-wide uppercase mb-3">
             <Sparkles className="w-3.5 h-3.5" />
-            Telugu Document AI Suite
+            VMS - Smart Voter AI Suite
           </div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight mb-2">
-            Telugu PDF Reader & Voter Records Intelligence
+            VMS – Voter Management System
           </h1>
           <p className="text-xs sm:text-sm text-brand-100/90 leading-relaxed mb-5">
-            Automatic Telugu electoral roll extraction, persistent database storage, and 10-column structured analysis for files up to 300 MB.
+            Automatic Telugu electoral roll extraction, PostgreSQL database storage, and 10-column structured analysis for files up to 300 MB.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <button
@@ -57,14 +57,14 @@ export const Dashboard: React.FC = () => {
               className="px-4 py-2 bg-white text-brand-700 hover:bg-brand-50 rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-2"
             >
               <UploadCloud className="w-4 h-4" />
-              Upload PDF
+              Upload Voter Document
             </button>
             <button
               onClick={() => navigate('/extracted-data')}
               className="px-4 py-2 bg-brand-800/60 hover:bg-brand-800/80 text-white rounded-xl text-xs font-semibold backdrop-blur-sm transition-all flex items-center gap-1.5"
             >
               <TableProperties className="w-3.5 h-3.5" />
-              View Extracted Records ({totalRecords.toLocaleString()})
+              View Voter Records ({totalRecords.toLocaleString()})
             </button>
           </div>
         </div>

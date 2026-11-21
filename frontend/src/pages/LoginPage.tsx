@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { authService } from '../services/authService';
+import { ThemeToggle } from '../components/common/ThemeToggle';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
@@ -113,7 +114,12 @@ export const LoginPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-[85vh] flex flex-col justify-center items-center py-10 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen w-full flex flex-col justify-center items-center py-10 px-4 sm:px-6 lg:px-8 relative bg-slate-50 dark:bg-slate-950 transition-colors duration-200">
+      {/* Top Right Theme Toggle */}
+      <div className="absolute top-6 right-6 z-20">
+        <ThemeToggle />
+      </div>
+
       {/* Background Glow Effect */}
       <div className="w-full max-w-md relative">
         <div className="absolute -top-10 -left-10 w-48 h-48 bg-brand-500/10 rounded-full blur-3xl pointer-events-none" />
