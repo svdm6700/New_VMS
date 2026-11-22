@@ -35,6 +35,11 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
   const { user, isAuthenticated, isSuperAdmin, isAdmin, isUser, logout } = useAuth();
   const navigate = useNavigate();
 
+  // Single Screen User Access: Never render sidebar navigation for User role
+  if (isUser) {
+    return null;
+  }
+
   const handleLogout = async () => {
     await logout();
     navigate('/login');

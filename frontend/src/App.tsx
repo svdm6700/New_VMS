@@ -25,6 +25,7 @@ import { ConstituencyManagement } from './pages/ConstituencyManagement';
 import { WardManagement } from './pages/WardManagement';
 import { UserAssignmentsPage } from './pages/UserAssignmentsPage';
 import { ReportsExportPage } from './pages/ReportsExportPage';
+import { VoterVerificationPage } from './pages/VoterVerificationPage';
 
 const RootRedirect: React.FC = () => {
   const { isAuthenticated, isUser, isLoading } = useAuth();
@@ -38,18 +39,18 @@ const RootRedirect: React.FC = () => {
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
-  return <Navigate to={isUser ? '/user/dashboard' : '/admin/dashboard'} replace />;
+  return <Navigate to={isUser ? '/voter-verification' : '/admin/dashboard'} replace />;
 };
 
 const WalletRedirect: React.FC = () => {
   const { isUser } = useAuth();
-  return <Navigate to={isUser ? '/my-wallet' : '/admin/wallets'} replace />;
+  return <Navigate to={isUser ? '/voter-verification' : '/admin/wallets'} replace />;
 };
 
 function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isUser, isLoading } = useAuth();
   const isLoginPage = location.pathname === '/login';
 
   // If loading session state, show centered spinner
@@ -75,14 +76,14 @@ function AppLayout() {
 
   return (
     <div className="min-h-screen bg-slate-50/70 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200">
-      {/* Sidebar Navigation */}
-      <AppSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      {/* Sidebar Navigation (Hidden for standard User role) */}
+      {!isUser && <AppSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />}
 
       {/* Main Layout Area */}
-      <div className="flex-1 flex flex-col lg:pl-64 min-w-0 transition-all">
+      <div className={`flex-1 flex flex-col min-w-0 transition-all ${isUser ? '' : 'lg:pl-64'}`}>
         <TopNavbar onOpenSidebar={() => setSidebarOpen(true)} />
 
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+        <main className={`flex-1 p-4 sm:p-6 lg:p-8 ${isUser ? 'max-w-4xl' : 'max-w-7xl'} w-full mx-auto`}>
           <Routes>
             {/* Root routing */}
             <Route path="/" element={<RootRedirect />} />
@@ -90,6 +91,17 @@ function AppLayout() {
 
             {/* Public Auth Route */}
             <Route path="/login" element={<LoginPage />} />
+
+            {/* Voter Verification (Single Screen for User role, also accessible to Admins) */}
+            <Route
+              path="/voter-verification"
+              element={
+                <ProtectedRoute allowedRoles={['user', 'admin', 'super_admin']}>
+                  <VoterVerificationPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/verify" element={<Navigate to="/voter-verification" replace />} />
 
             {/* Role-Based Dashboards */}
             <Route
@@ -103,9 +115,7 @@ function AppLayout() {
             <Route
               path="/user/dashboard"
               element={
-                <ProtectedRoute allowedRoles={['user']}>
-                  <UserDashboard />
-                </ProtectedRoute>
+                <Navigate to="/voter-verification" replace />
               }
             />
 
@@ -166,11 +176,11 @@ function AppLayout() {
               }
             />
 
-            {/* Voter Records & Entry Management (All Authenticated Roles) */}
+            {/* Voter Records & Entry Management (Administrative Roles) */}
             <Route
               path="/extracted-data"
               element={
-                <ProtectedRoute allowedRoles={['super_admin', 'admin', 'user']}>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <ExtractedData />
                 </ProtectedRoute>
               }
@@ -180,7 +190,7 @@ function AppLayout() {
             <Route
               path="/voter-entries"
               element={
-                <ProtectedRoute allowedRoles={['super_admin', 'admin', 'user']}>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <VoterEntriesPage />
                 </ProtectedRoute>
               }
@@ -212,7 +222,7 @@ function AppLayout() {
             <Route
               path="/my-wallet"
               element={
-                <ProtectedRoute allowedRoles={['super_admin', 'admin', 'user']}>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <MyWalletPage />
                 </ProtectedRoute>
               }
@@ -232,7 +242,7 @@ function AppLayout() {
             <Route
               path="/profile"
               element={
-                <ProtectedRoute allowedRoles={['super_admin', 'admin', 'user']}>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <ProfilePage />
                 </ProtectedRoute>
               }

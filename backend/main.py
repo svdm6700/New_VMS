@@ -61,6 +61,7 @@ try:
     from backend.excel import create_excel
     from backend.seed import seed_database
     from backend.pdf_generator import generate_voters_a4_pdf
+    from backend.photo_service import get_voter_photo_path
 except ImportError:
     from database import (
         init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel,
@@ -79,6 +80,7 @@ except ImportError:
     from excel import create_excel
     from seed import seed_database
     from pdf_generator import generate_voters_a4_pdf
+    from photo_service import get_voter_photo_path
 
 # Initialize database & seed initial admin (only if not already created)
 seed_database()
@@ -1669,6 +1671,12 @@ def list_voter_records(
     current_user: Optional[UserModel] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
+    if current_user and current_user.role.lower() not in ("super_admin", "superadmin", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: Standard users cannot access global voter records. Please use the Voter Verification screen."
+        )
+
     q = db.query(VoterRecordModel)
 
     joined_doc = False
@@ -1949,6 +1957,12 @@ def search_voters(
     Search voter records with support for partial name, EPIC voter ID, house no, area, or mobile number.
     Returns paginated voter results filtered strictly by caller's geographic scope.
     """
+    if current_user and current_user.role.lower() not in ("super_admin", "superadmin", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: Standard users cannot access voter lookup. Please use the Voter Verification screen."
+        )
+
     query = db.query(VoterRecordModel).join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
 
     # Geographic Scope Enforcement
@@ -2147,6 +2161,12 @@ def generate_selected_voters_pdf(
     Generate an A4 PDF containing selected voter records (27 voters per page, 3 cols x 9 rows).
     Enforces RBAC: returns 403 if any selected voter is outside caller's geographic scope.
     """
+    if current_user and current_user.role.lower() not in ("super_admin", "superadmin", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: Standard users cannot generate bulk voter PDFs. Please use the Voter Verification screen."
+        )
+
     if not body.voter_ids:
         raise HTTPException(status_code=400, detail="No voter IDs provided.")
 
@@ -2203,6 +2223,12 @@ def generate_filtered_voter_list_pdf(
     Accepts filter parameters in JSON body or query parameters.
     Enforces RBAC geographic scope.
     """
+    if current_user and current_user.role.lower() not in ("super_admin", "superadmin", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: Standard users cannot generate bulk voter PDFs. Please use the Voter Verification screen."
+        )
+
     eff_district = (body.district if body and body.district is not None else district)
     eff_constituency = (body.constituency if body and body.constituency is not None else constituency)
     eff_ward = (body.ward_number if body and body.ward_number is not None else ward_number)
@@ -2310,6 +2336,110 @@ def generate_filtered_voter_list_pdf(
             "Access-Control-Expose-Headers": "Content-Disposition"
         }
     )
+
+# -------------------------------------------------------------
+# 14b. Single-Screen Voter Verification API (User Role)
+# -------------------------------------------------------------
+@app.get("/api/voters/verify/{unique_code}", tags=["Voter Verification"])
+def verify_voter_code(
+    unique_code: str,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Verify voter by exact 5-character alphanumeric unique code.
+    Requires JWT authentication.
+    Enforces RBAC geographic scope.
+    Returns only the matching voter's details.
+    """
+    code = (unique_code or "").strip().upper()
+    if len(code) != 5 or not code.isalnum():
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Voter Code format. Code must be exactly 5 alphanumeric characters."
+        )
+
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.unique_key == code).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Invalid Voter Code")
+
+    # Enforce geographic scope restrictions
+    _check_voter_geographic_scope(voter, current_user, db)
+
+    doc = voter.document if hasattr(voter, "document") and voter.document else db.query(DocumentModel).filter(DocumentModel.id == voter.document_id).first()
+
+    photo_path = get_voter_photo_path(
+        unique_key=voter.unique_key,
+        voter_id=voter.voter_id,
+        document_id=voter.document_id,
+        source_page=voter.source_page
+    )
+
+    photo_base64 = None
+    if photo_path and os.path.exists(photo_path):
+        try:
+            import base64
+            with open(photo_path, "rb") as pf:
+                b64 = base64.b64encode(pf.read()).decode("utf-8")
+                photo_base64 = f"data:image/jpeg;base64,{b64}"
+        except Exception:
+            photo_base64 = None
+
+    return {
+        "status": "success",
+        "unique_code": voter.unique_key,
+        "unique_key": voter.unique_key,
+        "voter_name": voter.voter_name,
+        "epic_number": voter.voter_id,
+        "voter_id": voter.voter_id,
+        "relation_type": voter.relation_type,
+        "relation_name": voter.relation_name,
+        "father_or_husband_name": voter.relation_name,
+        "age": voter.age,
+        "gender": voter.gender,
+        "house_number": voter.house_no,
+        "house_no": voter.house_no,
+        "district": doc.district if doc else None,
+        "constituency": doc.constituency if doc else None,
+        "ward": doc.ward_number if doc else None,
+        "ward_number": doc.ward_number if doc else None,
+        "part_number": voter.electoral_roll_no or (str(voter.source_page) if voter.source_page else None),
+        "electoral_roll_no": voter.electoral_roll_no,
+        "serial_no": voter.serial_no,
+        "area": doc.area if doc else None,
+        "has_photo": bool(photo_path and os.path.exists(photo_path)),
+        "photo_url": f"/api/voters/{voter.unique_key}/photo" if photo_path else None,
+        "photo_base64": photo_base64
+    }
+
+@app.get("/api/voters/{unique_code}/photo", tags=["Voter Verification"])
+def get_voter_photo_endpoint(
+    unique_code: str,
+    db: Session = Depends(get_db)
+):
+    """Serve voter photo by unique key or EPIC ID."""
+    code = (unique_code or "").strip().upper()
+    voter = db.query(VoterRecordModel).filter(
+        or_(
+            VoterRecordModel.unique_key == code,
+            VoterRecordModel.voter_id == unique_code.strip()
+        )
+    ).first()
+
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter not found.")
+
+    photo_path = get_voter_photo_path(
+        unique_key=voter.unique_key,
+        voter_id=voter.voter_id,
+        document_id=voter.document_id,
+        source_page=voter.source_page
+    )
+
+    if not photo_path or not os.path.exists(photo_path):
+        raise HTTPException(status_code=404, detail="Photo not available.")
+
+    return FileResponse(photo_path, media_type="image/jpeg")
 
 @app.get("/api/voters/{voter_id}", tags=["Voter Search & Entries"])
 def get_voter_details(voter_id: str, db: Session = Depends(get_db)):

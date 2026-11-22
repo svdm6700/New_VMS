@@ -33,6 +33,11 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 
   const normalizedUserRole = (user.role === ('superadmin' as any) ? 'super_admin' : user.role) as UserRole;
 
+  // Enforce Single Screen access for standard User role
+  if (normalizedUserRole === 'user' && location.pathname !== '/voter-verification' && location.pathname !== '/verify') {
+    return <Navigate to="/voter-verification" replace />;
+  }
+
   // Determine authorized roles
   let permitted = true;
   let requiredRoleLabel = 'Administrator';

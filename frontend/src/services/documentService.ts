@@ -7,7 +7,8 @@ import {
   PaginatedDocumentsResponse,
   ProcessOptions,
   VoterRecord,
-  VoterRecordsResponse
+  VoterRecordsResponse,
+  VerifiedVoter
 } from '../types/document';
 
 export const documentService = {
@@ -254,5 +255,14 @@ export const documentService = {
   }): Promise<Blob> {
     const res = await api.post('/api/voters/pdf/generate', filters || {}, { responseType: 'blob' });
     return new Blob([res.data], { type: 'application/pdf' });
+  },
+
+  // -------------------------------------------------------------
+  // Voter Verification API (Single-Screen User Access)
+  // -------------------------------------------------------------
+  async verifyVoter(uniqueCode: string): Promise<VerifiedVoter> {
+    const cleanCode = (uniqueCode || '').trim().toUpperCase();
+    const res = await api.get(`/api/voters/verify/${cleanCode}`);
+    return res.data;
   },
 };

@@ -93,6 +93,33 @@ export interface VoterRecord {
   ward_number?: string;
 }
 
+export interface VerifiedVoter {
+  status: string;
+  unique_code: string;
+  unique_key: string;
+  voter_name: string;
+  epic_number: string;
+  voter_id: string;
+  relation_type: string;
+  relation_name: string;
+  father_or_husband_name: string;
+  age: string;
+  gender: string;
+  house_number: string;
+  house_no: string;
+  district?: string;
+  constituency?: string;
+  ward?: string;
+  ward_number?: string;
+  part_number?: string;
+  electoral_roll_no?: string;
+  serial_no?: string;
+  area?: string;
+  has_photo: boolean;
+  photo_url?: string;
+  photo_base64?: string;
+}
+
 export interface VoterRecordsResponse {
   total: number;
   page: number;
