@@ -2757,7 +2757,7 @@ def get_payments_reports(
 
 @app.get("/api/payments/export", tags=["Payments Dashboard"])
 def export_payments(
-    format: str = Query("csv", regex="^(csv|excel|xlsx)$"),
+    format: str = Query("csv", pattern="^(csv|excel|xlsx)$"),
     q: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,

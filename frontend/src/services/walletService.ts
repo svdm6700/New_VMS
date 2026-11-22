@@ -157,6 +157,8 @@ export const walletService = {
     page?: number;
     limit?: number;
     search?: string;
+    district?: string;
+    constituency?: string;
     ward?: string;
     gender?: string;
   }): Promise<{ items: any[]; total: number; page: number; limit: number; message?: string }> {

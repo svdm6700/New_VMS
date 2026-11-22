@@ -19,6 +19,17 @@ def run_tests():
     print("✓ [Auth] Admin authenticated successfully.")
 
     # 2. Operator/Tester Authentication
+    requests.post(
+        f"{BASE_URL}/api/admin/users",
+        headers=admin_headers,
+        json={
+            "full_name": "Test Regular User",
+            "email": "tester@telugupdf.com",
+            "username": "tester",
+            "password": "User@12345",
+            "role": "user"
+        }
+    )
     user_login_res = requests.post(f"{BASE_URL}/api/auth/login", json={"username_or_email": "tester", "password": "User@12345"})
     assert user_login_res.status_code == 200, f"Tester login failed: {user_login_res.text}"
     user_token = user_login_res.json()["access_token"]
