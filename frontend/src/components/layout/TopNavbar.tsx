@@ -26,8 +26,8 @@ const pageTitles: Record<string, string> = {
   '/wallets': 'Admin Wallet Hub & Treasury',
   '/my-wallet': 'Spend on Voter & Field Disbursal',
   '/settings': 'Application Settings',
-  '/constituency-management': 'Master Constituency Management',
-  '/ward-management': 'Master Ward & Area Management',
+  '/constituency-management': 'Constituency & Ward Management',
+  '/ward-management': 'Constituency & Ward Management',
   '/user-assignments': 'User Geographic Assignments',
   '/reports': 'Reports & Data Export',
 };

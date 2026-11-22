@@ -181,12 +181,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
 
               <NavLink to="/constituency-management" onClick={onClose} className={navLinkClass}>
                 <Building2 className="w-4 h-4 shrink-0 text-cyan-600 dark:text-cyan-400" />
-                <span>Constituency Management</span>
-              </NavLink>
-
-              <NavLink to="/ward-management" onClick={onClose} className={navLinkClass}>
-                <Layers className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" />
-                <span>Ward Management</span>
+                <span>Constituencies & Wards</span>
               </NavLink>
 
               <NavLink to="/user-assignments" onClick={onClose} className={navLinkClass}>
