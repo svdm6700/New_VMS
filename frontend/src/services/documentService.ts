@@ -265,4 +265,36 @@ export const documentService = {
     const res = await api.get(`/api/voters/verify/${cleanCode}`);
     return res.data;
   },
+
+  // -------------------------------------------------------------
+  // Voter Payment & Wallet Deduction APIs
+  // -------------------------------------------------------------
+  async getWalletBalance(): Promise<{ available_balance: number; currency: string; status: string }> {
+    const res = await api.get('/api/wallet/balance');
+    return res.data;
+  },
+
+  async getVoterPaymentStatus(voterId: number): Promise<any> {
+    const res = await api.get(`/api/voters/${voterId}/payment-status`);
+    return res.data;
+  },
+
+  async submitVoterPayment(
+    voterId: number,
+    remarks?: string,
+    idempotencyKey?: string
+  ): Promise<any> {
+    const res = await api.post(`/api/voters/${voterId}/submit-payment`, {
+      remarks: remarks || '',
+      idempotency_key: idempotencyKey,
+    });
+    return res.data;
+  },
+
+  async updateVoterRemarks(voterId: number, remarks: string): Promise<any> {
+    const res = await api.patch(`/api/voters/${voterId}/remarks`, {
+      remarks,
+    });
+    return res.data;
+  },
 };

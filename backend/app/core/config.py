@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     INITIAL_ADMIN_USERNAME: str = "admin"
     INITIAL_ADMIN_PASSWORD: str = "Admin@12345"
 
+    # 4b. Wallet & Voter Payment Settings
+    DEFAULT_VOTER_PAYMENT_AMOUNT: float = 500.0
+
     # 5. PDF Upload Settings
     PDF_UPLOAD_DIR: str = "storage/uploads"
     PDF_MAX_SIZE_MB: int = 300

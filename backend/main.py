@@ -2338,8 +2338,49 @@ def generate_filtered_voter_list_pdf(
     )
 
 # -------------------------------------------------------------
-# 14b. Single-Screen Voter Verification API (User Role)
+# 14b. Single-Screen Voter Verification, Wallet & Payment APIs
 # -------------------------------------------------------------
+def get_or_create_admin_wallet(db: Session, admin_id: int) -> WalletModel:
+    w = db.query(WalletModel).filter(WalletModel.owner_type == "ADMIN", WalletModel.owner_id == admin_id).first()
+    if not w:
+        w = WalletModel(
+            owner_type="ADMIN",
+            owner_id=admin_id,
+            available_balance=Decimal("0.00"),
+            currency="INR",
+            status="ACTIVE",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
+        )
+        db.add(w)
+        db.commit()
+        db.refresh(w)
+    return w
+
+def get_or_create_user_wallet(db: Session, user_id: int) -> WalletModel:
+    w = db.query(WalletModel).filter(WalletModel.owner_type == "USER", WalletModel.owner_id == user_id).first()
+    if not w:
+        w = WalletModel(
+            owner_type="USER",
+            owner_id=user_id,
+            available_balance=Decimal("0.00"),
+            currency="INR",
+            status="ACTIVE",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
+        )
+        db.add(w)
+        db.commit()
+        db.refresh(w)
+    return w
+
+class SubmitVoterPaymentRequest(BaseModel):
+    remarks: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+class UpdateVoterRemarksRequest(BaseModel):
+    remarks: Optional[str] = None
+
 @app.get("/api/voters/verify/{unique_code}", tags=["Voter Verification"])
 def verify_voter_code(
     unique_code: str,
@@ -2350,7 +2391,7 @@ def verify_voter_code(
     Verify voter by exact 5-character alphanumeric unique code.
     Requires JWT authentication.
     Enforces RBAC geographic scope.
-    Returns only the matching voter's details.
+    Returns matching voter details, wallet balance, and payment status.
     """
     code = (unique_code or "").strip().upper()
     if len(code) != 5 or not code.isalnum():
@@ -2385,8 +2426,33 @@ def verify_voter_code(
         except Exception:
             photo_base64 = None
 
+    # Check existing payment status & remarks
+    existing_alloc = db.query(VoterAmountAllocationModel).filter(
+        VoterAmountAllocationModel.voter_id == voter.id,
+        VoterAmountAllocationModel.status == "ACTIVE"
+    ).first()
+
+    existing_payment = db.query(PaymentModel).filter(
+        PaymentModel.voter_id == voter.id,
+        PaymentModel.payment_status == "Paid"
+    ).first()
+
+    is_paid = bool(existing_alloc or existing_payment)
+    alloc_amount = float(existing_alloc.amount if existing_alloc else (existing_payment.amount if existing_payment else 0.0))
+    tx_id = (existing_alloc.wallet_transaction.transaction_id if existing_alloc and existing_alloc.wallet_transaction else (existing_alloc.allocation_reference if existing_alloc else (existing_payment.transaction_id if existing_payment else None)))
+    tx_date = (existing_alloc.allocation_date.isoformat() if existing_alloc and existing_alloc.allocation_date else (existing_payment.created_at.isoformat() if existing_payment and existing_payment.created_at else None))
+    existing_remarks = (existing_alloc.remarks if existing_alloc and existing_alloc.remarks else (existing_payment.remarks if existing_payment and existing_payment.remarks else ""))
+    paid_by = (existing_alloc.user.full_name or existing_alloc.user.username if existing_alloc and existing_alloc.user else (existing_payment.creator.full_name or existing_payment.creator.username if existing_payment and existing_payment.creator else None))
+
+    is_admin = is_admin_or_super(current_user)
+    user_wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
+    user_balance = float(user_wallet.available_balance or 0.0)
+    applicable_amt = float(getattr(settings, "DEFAULT_VOTER_PAYMENT_AMOUNT", 500.0))
+
     return {
         "status": "success",
+        "id": voter.id,
+        "voter_db_id": voter.id,
         "unique_code": voter.unique_key,
         "unique_key": voter.unique_key,
         "voter_name": voter.voter_name,
@@ -2409,7 +2475,17 @@ def verify_voter_code(
         "area": doc.area if doc else None,
         "has_photo": bool(photo_path and os.path.exists(photo_path)),
         "photo_url": f"/api/voters/{voter.unique_key}/photo" if photo_path else None,
-        "photo_base64": photo_base64
+        "photo_base64": photo_base64,
+        "is_paid": is_paid,
+        "payment_status": "PAID" if is_paid else "UNPAID",
+        "applicable_amount": applicable_amt,
+        "user_wallet_balance": user_balance,
+        "amount": alloc_amount if is_paid else applicable_amt,
+        "deducted_amount": alloc_amount if is_paid else None,
+        "transaction_id": tx_id,
+        "transaction_date": tx_date,
+        "remarks": existing_remarks,
+        "paid_by": paid_by
     }
 
 @app.get("/api/voters/{unique_code}/photo", tags=["Voter Verification"])
@@ -2440,6 +2516,306 @@ def get_voter_photo_endpoint(
         raise HTTPException(status_code=404, detail="Photo not available.")
 
     return FileResponse(photo_path, media_type="image/jpeg")
+
+@app.get("/api/wallet/balance", tags=["Wallet"])
+def get_logged_in_wallet_balance(
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Fetch logged-in user's current wallet balance and status."""
+    is_admin = is_admin_or_super(current_user)
+    wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
+    return {
+        "status": "ok",
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "wallet_id": wallet.id,
+        "owner_type": wallet.owner_type,
+        "available_balance": float(wallet.available_balance or 0.0),
+        "currency": wallet.currency or "INR",
+        "wallet_status": wallet.status or "ACTIVE"
+    }
+
+@app.get("/api/voters/{voter_id}/payment-status", tags=["Voter Payment"])
+def get_voter_payment_status(
+    voter_id: int,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Check existing payment status and remarks for a voter."""
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == voter_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter not found.")
+
+    _check_voter_geographic_scope(voter, current_user, db)
+
+    existing_alloc = db.query(VoterAmountAllocationModel).filter(
+        VoterAmountAllocationModel.voter_id == voter.id,
+        VoterAmountAllocationModel.status == "ACTIVE"
+    ).first()
+
+    existing_payment = db.query(PaymentModel).filter(
+        PaymentModel.voter_id == voter.id,
+        PaymentModel.payment_status == "Paid"
+    ).first()
+
+    is_admin = is_admin_or_super(current_user)
+    wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
+
+    is_paid = bool(existing_alloc or existing_payment)
+    amount = float(existing_alloc.amount if existing_alloc else (existing_payment.amount if existing_payment else 0.0))
+    tx_id = (existing_alloc.wallet_transaction.transaction_id if existing_alloc and existing_alloc.wallet_transaction else (existing_alloc.allocation_reference if existing_alloc else (existing_payment.transaction_id if existing_payment else None)))
+    tx_date = (existing_alloc.allocation_date.isoformat() if existing_alloc and existing_alloc.allocation_date else (existing_payment.created_at.isoformat() if existing_payment and existing_payment.created_at else None))
+    remarks = (existing_alloc.remarks if existing_alloc and existing_alloc.remarks else (existing_payment.remarks if existing_payment and existing_payment.remarks else ""))
+    paid_by = (existing_alloc.user.full_name or existing_alloc.user.username if existing_alloc and existing_alloc.user else (existing_payment.creator.full_name or existing_payment.creator.username if existing_payment and existing_payment.creator else None))
+    applicable_amt = float(getattr(settings, "DEFAULT_VOTER_PAYMENT_AMOUNT", 500.0))
+
+    return {
+        "voter_id": voter.id,
+        "unique_code": voter.unique_key,
+        "is_paid": is_paid,
+        "payment_status": "PAID" if is_paid else "UNPAID",
+        "applicable_amount": applicable_amt,
+        "user_wallet_balance": float(wallet.available_balance or 0.0),
+        "amount": amount if is_paid else applicable_amt,
+        "deducted_amount": amount if is_paid else None,
+        "transaction_id": tx_id,
+        "transaction_date": tx_date,
+        "remarks": remarks,
+        "paid_by": paid_by
+    }
+
+@app.post("/api/voters/{voter_id}/submit-payment", tags=["Voter Payment"])
+def submit_voter_payment(
+    voter_id: int,
+    req: Optional[SubmitVoterPaymentRequest] = None,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Deduct configured amount from User's wallet and record payment for voter.
+    Uses database row-level locking for concurrency protection.
+    Enforces geographic scope and prevents duplicate deductions.
+    """
+    remarks_val = (req.remarks.strip() if req and req.remarks and req.remarks.strip() else None)
+    idempotency_key_val = (req.idempotency_key.strip() if req and req.idempotency_key and req.idempotency_key.strip() else None)
+
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == voter_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter not found.")
+
+    # Enforce geographic scope restrictions
+    _check_voter_geographic_scope(voter, current_user, db)
+
+    is_admin = is_admin_or_super(current_user)
+
+    # Check if voter has already been paid with row-level lock
+    existing_alloc = db.query(VoterAmountAllocationModel).filter(
+        VoterAmountAllocationModel.voter_id == voter.id,
+        VoterAmountAllocationModel.status == "ACTIVE"
+    ).with_for_update().first()
+
+    existing_payment = db.query(PaymentModel).filter(
+        PaymentModel.voter_id == voter.id,
+        PaymentModel.payment_status == "Paid"
+    ).first()
+
+    active_wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
+
+    if existing_alloc or existing_payment:
+        # Already paid! Do not deduct again, do not create duplicate transactions.
+        paid_amount = float(existing_alloc.amount if existing_alloc else existing_payment.amount)
+        tx_id = (existing_alloc.wallet_transaction.transaction_id if existing_alloc and existing_alloc.wallet_transaction else (existing_alloc.allocation_reference if existing_alloc else existing_payment.transaction_id))
+        tx_date = (existing_alloc.allocation_date.isoformat() if existing_alloc and existing_alloc.allocation_date else existing_payment.created_at.isoformat())
+        existing_rem = (existing_alloc.remarks if existing_alloc and existing_alloc.remarks else (existing_payment.remarks if existing_payment and existing_payment.remarks else remarks_val))
+
+        if remarks_val and existing_alloc and not existing_alloc.remarks:
+            existing_alloc.remarks = remarks_val
+            db.commit()
+
+        return {
+            "status": "already_paid",
+            "message": "Payment has already been completed for this voter.",
+            "is_paid": True,
+            "payment_status": "PAID",
+            "amount": paid_amount,
+            "deducted_amount": paid_amount,
+            "transaction_id": tx_id,
+            "transaction_date": tx_date,
+            "wallet_balance": float(active_wallet.available_balance or 0.0),
+            "updated_balance": float(active_wallet.available_balance or 0.0),
+            "remarks": existing_rem
+        }
+
+    # Calculate applicable amount strictly on backend (never trust frontend amount)
+    deduct_amount = Decimal(str(getattr(settings, "DEFAULT_VOTER_PAYMENT_AMOUNT", 500.0)))
+
+    # Atomic row-level lock on the User's (or Admin's) wallet
+    if is_admin:
+        wallet = db.query(WalletModel).filter(
+            WalletModel.owner_type == "ADMIN",
+            WalletModel.owner_id == current_user.id
+        ).with_for_update().first()
+        if not wallet or wallet.available_balance < deduct_amount:
+            user_w = db.query(WalletModel).filter(
+                WalletModel.owner_type == "USER",
+                WalletModel.owner_id == current_user.id
+            ).with_for_update().first()
+            if user_w and user_w.available_balance >= deduct_amount:
+                wallet = user_w
+    else:
+        wallet = db.query(WalletModel).filter(
+            WalletModel.owner_type == "USER",
+            WalletModel.owner_id == current_user.id
+        ).with_for_update().first()
+
+    if not wallet or wallet.available_balance < deduct_amount:
+        avail = float(wallet.available_balance) if wallet else 0.0
+        raise HTTPException(
+            status_code=400,
+            detail="Insufficient Wallet Balance"
+        )
+
+    # Perform atomic deduction
+    before_bal = wallet.available_balance
+    wallet.available_balance -= deduct_amount
+    after_bal = wallet.available_balance
+    wallet.updated_at = datetime.now(timezone.utc)
+
+    val_ref = idempotency_key_val or f"VAL-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+    tx_id = f"WTXN-VOTER-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+    now_utc = datetime.now(timezone.utc)
+
+    # Record immutable wallet transaction ledger
+    tx = WalletTransactionModel(
+        transaction_id=tx_id,
+        wallet_id=wallet.id,
+        transaction_type="VOTER_AMOUNT_DEBIT",
+        direction="DEBIT",
+        amount=deduct_amount,
+        balance_before=before_bal,
+        balance_after=after_bal,
+        reference_type="VOTER_ALLOCATION",
+        reference_id=str(voter.id),
+        idempotency_key=idempotency_key_val,
+        remarks=remarks_val or f"Disbursed ₹{float(deduct_amount):,.2f} for voter {voter.voter_name} ({voter.unique_key})",
+        created_by=current_user.id,
+        created_at=now_utc
+    )
+    db.add(tx)
+    db.flush()
+
+    # Record voter amount allocation
+    alloc = VoterAmountAllocationModel(
+        allocation_reference=val_ref,
+        voter_id=voter.id,
+        user_id=current_user.id,
+        wallet_transaction_id=tx.id,
+        amount=deduct_amount,
+        allocation_date=now_utc,
+        status="ACTIVE",
+        remarks=remarks_val,
+        created_by=current_user.id,
+        created_at=now_utc
+    )
+    db.add(alloc)
+
+    # Record in Payments ledger
+    today_str = datetime.now().strftime("%Y%m%d")
+    unique_suffix = uuid4().hex[:6].upper()
+    payment = PaymentModel(
+        transaction_id=f"TXN-{today_str}-{unique_suffix}",
+        receipt_number=f"RCP-{today_str}-{unique_suffix}",
+        voter_id=voter.id,
+        amount=deduct_amount,
+        payment_date=date.today(),
+        payment_method="Wallet",
+        payment_status="Paid",
+        remarks=remarks_val,
+        transaction_reference=tx_id,
+        voter_name=voter.voter_name,
+        epic_no=voter.voter_id,
+        district=getattr(voter.document, "district", "") if voter.document else "",
+        constituency=getattr(voter.document, "constituency", "") if voter.document else "",
+        created_by=current_user.id,
+        verified_by=current_user.id,
+        verified_at=now_utc,
+        created_at=now_utc,
+        updated_at=now_utc
+    )
+    db.add(payment)
+
+    # Record audit log
+    db.add(AuditLogModel(
+        user_id=current_user.id,
+        action="VOTER_PAYMENT_SUBMITTED",
+        details=f"User @{current_user.username} submitted payment of ₹{float(deduct_amount):,.2f} for voter {voter.voter_name} ({voter.unique_key}). Wallet new balance: ₹{after_bal:,.2f}",
+        ip_address="127.0.0.1",
+        created_at=now_utc
+    ))
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "Payment submitted successfully.",
+        "is_paid": True,
+        "payment_status": "PAID",
+        "amount": float(deduct_amount),
+        "deducted_amount": float(deduct_amount),
+        "transaction_id": tx_id,
+        "transaction_date": now_utc.isoformat(),
+        "wallet_balance": float(after_bal),
+        "updated_balance": float(after_bal),
+        "remarks": remarks_val
+    }
+
+@app.patch("/api/voters/{voter_id}/remarks", tags=["Voter Payment"])
+def update_voter_remarks(
+    voter_id: int,
+    req: UpdateVoterRemarksRequest,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Save or update remarks for a voter without modifying payment or deducting money.
+    """
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == voter_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter not found.")
+
+    _check_voter_geographic_scope(voter, current_user, db)
+
+    clean_remarks = req.remarks.strip() if req and req.remarks else ""
+
+    alloc = db.query(VoterAmountAllocationModel).filter(
+        VoterAmountAllocationModel.voter_id == voter.id,
+        VoterAmountAllocationModel.status == "ACTIVE"
+    ).first()
+    if alloc:
+        alloc.remarks = clean_remarks
+
+    payment = db.query(PaymentModel).filter(
+        PaymentModel.voter_id == voter.id
+    ).order_by(desc(PaymentModel.created_at)).first()
+    if payment:
+        payment.remarks = clean_remarks
+
+    db.add(AuditLogModel(
+        user_id=current_user.id,
+        action="VOTER_REMARKS_UPDATED",
+        details=f"User @{current_user.username} updated remarks for voter {voter.voter_name} ({voter.unique_key}).",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "Remarks saved successfully.",
+        "remarks": clean_remarks,
+        "voter_id": voter.id
+    }
 
 @app.get("/api/voters/{voter_id}", tags=["Voter Search & Entries"])
 def get_voter_details(voter_id: str, db: Session = Depends(get_db)):

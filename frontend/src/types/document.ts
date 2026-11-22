@@ -95,6 +95,8 @@ export interface VoterRecord {
 
 export interface VerifiedVoter {
   status: string;
+  id?: number;
+  voter_db_id?: number;
   unique_code: string;
   unique_key: string;
   voter_name: string;
@@ -118,6 +120,45 @@ export interface VerifiedVoter {
   has_photo: boolean;
   photo_url?: string;
   photo_base64?: string;
+  is_paid?: boolean;
+  payment_status?: string;
+  applicable_amount?: number;
+  user_wallet_balance?: number;
+  amount?: number;
+  deducted_amount?: number;
+  transaction_id?: string;
+  transaction_date?: string;
+  remarks?: string;
+  paid_by?: string;
+}
+
+export interface VoterPaymentStatus {
+  voter_id: number;
+  unique_code?: string;
+  is_paid: boolean;
+  payment_status: 'PAID' | 'UNPAID';
+  applicable_amount: number;
+  user_wallet_balance: number;
+  amount: number;
+  deducted_amount?: number;
+  transaction_id?: string;
+  transaction_date?: string;
+  remarks?: string;
+  paid_by?: string;
+}
+
+export interface SubmitPaymentResponse {
+  status: string;
+  message: string;
+  is_paid: boolean;
+  payment_status: string;
+  amount: number;
+  deducted_amount: number;
+  transaction_id: string;
+  transaction_date: string;
+  wallet_balance: number;
+  updated_balance: number;
+  remarks?: string;
 }
 
 export interface VoterRecordsResponse {
