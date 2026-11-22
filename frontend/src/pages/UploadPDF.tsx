@@ -194,7 +194,7 @@ export const UploadPDF: React.FC = () => {
                   Document Location Details (ప్రాంత వివరాలు)
                 </h4>
                 <p className="text-[11px] text-slate-400">
-                  Enter manual jurisdiction and area details to link with voter records (All fields required *)
+                  Enter manual district, constituency, area and ward details to link with voter records (All fields required *)
                 </p>
               </div>
             </div>
@@ -202,41 +202,6 @@ export const UploadPDF: React.FC = () => {
               Required *
             </span>
           </div>
-
-          {/* Datalists for quick suggestions while allowing full manual typing */}
-          <datalist id="district-suggestions">
-            <option value="West Godavari (పశ్చిమ గోదావరి)" />
-            <option value="East Godavari (తూర్పు గోదావరి)" />
-            <option value="Krishna (కృష్ణా)" />
-            <option value="Guntur (గుంటూరు)" />
-            <option value="Visakhapatnam (విశాఖపట్నం)" />
-            <option value="Kurnool (కర్నూలు)" />
-            <option value="Anantapur (అనంతపురం)" />
-            <option value="Chittoor (చిత్తూరు)" />
-            <option value="YSR Kadapa (వైఎస్సార్ కడప)" />
-            <option value="Nellore (నెల్లూరు)" />
-            <option value="Prakasam (ప్రకాశం)" />
-            <option value="Srikakulam (శ్రీకాకుళం)" />
-            <option value="Vizianagaram (విజయనగరం)" />
-            <option value="Hyderabad (హైదరాబాద్)" />
-            <option value="Rangareddy (రంగారెడ్డి)" />
-            <option value="Warangal (వరంగల్)" />
-          </datalist>
-
-          <datalist id="constituency-suggestions">
-            <option value="Tadepalligudem (తాడేపల్లిగూడెం)" />
-            <option value="Bhimavaram (భీమవరం)" />
-            <option value="Tanuku (తణుకు)" />
-            <option value="Eluru (ఏలూరు)" />
-            <option value="Narasapuram (నరసాపురం)" />
-            <option value="Palakollu (పాలకొల్లు)" />
-            <option value="Unguturu (ఉంగుటూరు)" />
-            <option value="Kovvur (కొవ్వూరు)" />
-            <option value="Achanta (ఆచంట)" />
-            <option value="Rajahmundry City (రాజమండ్రి సిటీ)" />
-            <option value="Vijayawada Central (విజయవాడ సెంట్రల్)" />
-            <option value="Guntur West (గుంటూరు పశ్చిమ)" />
-          </datalist>
 
           {/* 2-Column Responsive Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
@@ -248,14 +213,13 @@ export const UploadPDF: React.FC = () => {
               <div className="relative">
                 <input
                   type="text"
-                  list="district-suggestions"
                   value={district}
                   onChange={(e) => {
                     setDistrict(e.target.value);
                     if (!touched.district) setTouched((t) => ({ ...t, district: true }));
                   }}
                   onBlur={() => setTouched((t) => ({ ...t, district: true }))}
-                  placeholder="Select or enter district (జిల్లా)"
+                  placeholder="Enter district name (జిల్లా) manually"
                   className={`w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all ${
                     touched.district && !isDistrictValid
                       ? 'border-rose-400 focus:ring-rose-500/20'
@@ -279,14 +243,13 @@ export const UploadPDF: React.FC = () => {
               <div className="relative">
                 <input
                   type="text"
-                  list="constituency-suggestions"
                   value={constituency}
                   onChange={(e) => {
                     setConstituency(e.target.value);
                     if (!touched.constituency) setTouched((t) => ({ ...t, constituency: true }));
                   }}
                   onBlur={() => setTouched((t) => ({ ...t, constituency: true }))}
-                  placeholder="Enter constituency name (నియోజకవర్గం)"
+                  placeholder="Enter constituency name (నియోజకవర్గం) manually"
                   className={`w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all ${
                     touched.constituency && !isConstituencyValid
                       ? 'border-rose-400 focus:ring-rose-500/20'

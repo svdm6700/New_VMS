@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   CreditCard,
   IndianRupee,
@@ -82,6 +83,7 @@ const METHOD_COLORS: Record<string, string> = {
 
 export const PaymentsDashboard: React.FC = () => {
   const { user, isAdmin } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // Summary State (7 KPI Metrics)
   const [summary, setSummary] = useState<PaymentSummary>({
@@ -283,6 +285,17 @@ export const PaymentsDashboard: React.FC = () => {
     fetchSummary();
     fetchCharts();
   }, [fetchSummary, fetchCharts]);
+
+  useEffect(() => {
+    const qParam = searchParams.get('q') || searchParams.get('search');
+    if (qParam) {
+      setSearchQuery(qParam);
+    }
+    const openAdd = searchParams.get('open_add');
+    if (openAdd === 'true') {
+      setShowAddModal(true);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     fetchPayments();

@@ -288,7 +288,7 @@ class VoterEntryModel(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     transaction_id = Column(String(64), unique=True, nullable=True, index=True)
     voter_id = Column(Integer, ForeignKey("voter_records.id", ondelete="CASCADE"), nullable=False, index=True)
-    mobile_number = Column(String(15), nullable=False, index=True)
+    mobile_number = Column(String(15), nullable=True, default="", index=True)
     amount = Column(Numeric(12, 2), nullable=False)
     entry_date = Column(Date, nullable=False, default=lambda: datetime.now(timezone.utc).date())
     payment_method = Column(String(32), default="Cash", nullable=False, index=True) # Cash, UPI, Bank Transfer, Other
@@ -338,7 +338,7 @@ class PaymentModel(Base):
     receipt_number = Column(String(64), unique=True, nullable=False, index=True)
     voter_id = Column(Integer, ForeignKey("voter_records.id", ondelete="CASCADE"), nullable=False, index=True)
     voter_entry_id = Column(Integer, ForeignKey("voter_entries.id", ondelete="SET NULL"), nullable=True, index=True)
-    mobile_number = Column(String(15), nullable=False, index=True)
+    mobile_number = Column(String(15), nullable=True, default="", index=True)
     amount = Column(Numeric(12, 2), nullable=False)
     payment_date = Column(Date, nullable=False, index=True)
     payment_method = Column(String(32), default="Cash", nullable=False, index=True) # Cash, UPI, Bank Transfer, Other
