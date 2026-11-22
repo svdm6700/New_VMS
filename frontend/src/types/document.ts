@@ -1,13 +1,52 @@
+export interface DocumentSummary {
+  total_documents: number;
+  completed_documents: number;
+  processing_documents: number;
+  failed_documents: number;
+  total_voters: number;
+  total_storage_bytes: number;
+}
+
+export interface DocumentDeletionPreview {
+  document_id: string;
+  document_name: string;
+  file_size: number;
+  district?: string;
+  constituency?: string;
+  voters_count: number;
+  exclusive_voters_count: number;
+  shared_voters_count: number;
+  processing_records_count: number;
+  payments_count: number;
+  voter_entries_count: number;
+  warning: string;
+  can_delete: boolean;
+}
+
+export interface PaginatedDocumentsResponse {
+  documents: DocumentItem[];
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+  summary: DocumentSummary;
+}
+
 export interface DocumentItem {
   id: string;
+  document_id?: string;
   filename: string;
+  document_name?: string;
   original_filename?: string;
   stored_file_path?: string;
   file_size: number;
+  file_type?: string;
   total_pages?: number;
   page_count: number;
   text_pages?: number;
   ocr_pages?: number;
+  extracted_voters?: number;
+  records_count?: number;
   processing_type?: string;
   status: 'completed' | 'processing' | 'failed' | 'uploaded' | 'pending';
   processing_status?: 'completed' | 'processing' | 'failed' | 'uploaded' | 'pending';
@@ -16,10 +55,10 @@ export interface DocumentItem {
   processed_at?: string | null;
   error?: string;
   processing_error?: string | null;
-  records_count?: number;
   use_ai?: boolean;
   uploaded_by?: number | null;
   uploader_name?: string;
+  file_exists_on_disk?: boolean;
 
   // Manual Location Details
   district?: string;

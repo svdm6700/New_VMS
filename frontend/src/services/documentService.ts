@@ -2,6 +2,9 @@ import api, { API_BASE_URL } from './api';
 import {
   DocumentItem,
   DocumentResult,
+  DocumentSummary,
+  DocumentDeletionPreview,
+  PaginatedDocumentsResponse,
   ProcessOptions,
   VoterRecord,
   VoterRecordsResponse
@@ -20,12 +23,58 @@ export const documentService = {
     constituency?: string;
     area?: string;
     ward_number?: string;
+    uploaded_by?: number;
+    date_from?: string;
+    date_to?: string;
     sort_by?: string;
     order?: string;
     limit?: number;
     page?: number;
   }): Promise<DocumentItem[]> {
     const res = await api.get('/api/documents', { params });
+    if (Array.isArray(res.data)) return res.data;
+    if (res.data && Array.isArray(res.data.documents)) return res.data.documents;
+    return [];
+  },
+
+  async getDocumentsExtended(params?: {
+    query?: string;
+    status?: string;
+    district?: string;
+    constituency?: string;
+    area?: string;
+    ward_number?: string;
+    uploaded_by?: number;
+    date_from?: string;
+    date_to?: string;
+    sort_by?: string;
+    order?: string;
+    limit?: number;
+    page?: number;
+  }): Promise<PaginatedDocumentsResponse> {
+    const res = await api.get('/api/documents', { params });
+    if (Array.isArray(res.data)) {
+      return {
+        documents: res.data,
+        total: res.data.length,
+        page: 1,
+        limit: res.data.length || 20,
+        pages: 1,
+        summary: {
+          total_documents: res.data.length,
+          completed_documents: res.data.filter((d: any) => d.status === 'completed').length,
+          processing_documents: res.data.filter((d: any) => d.status === 'processing' || d.status === 'uploaded').length,
+          failed_documents: res.data.filter((d: any) => d.status === 'failed').length,
+          total_voters: res.data.reduce((acc: number, d: any) => acc + (d.extracted_voters || d.records_count || 0), 0),
+          total_storage_bytes: res.data.reduce((acc: number, d: any) => acc + (d.file_size || 0), 0)
+        }
+      };
+    }
+    return res.data;
+  },
+
+  async getDocumentSummary(): Promise<DocumentSummary> {
+    const res = await api.get('/api/documents/summary');
     return res.data;
   },
 
@@ -35,7 +84,40 @@ export const documentService = {
   },
 
   getDocumentFileUrl(id: string): string {
-    return `${API_BASE_URL}/api/documents/${id}/file`;
+    return `${API_BASE_URL}/api/documents/${id}/download`;
+  },
+
+  async downloadDocument(id: string, filename?: string): Promise<void> {
+    const res = await api.get(`/api/documents/${id}/download`, { responseType: 'blob' });
+    const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename || `document-${id}.pdf`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
+  async getDeletionPreview(id: string): Promise<DocumentDeletionPreview> {
+    const res = await api.get(`/api/documents/${id}/deletion-preview`);
+    return res.data;
+  },
+
+  async deleteDocument(id: string): Promise<{
+    status: string;
+    id: string;
+    message: string;
+    deleted_voters_count: number;
+    cleaned_files: string[];
+  }> {
+    const res = await api.delete(`/api/documents/${id}`);
+    return res.data;
+  },
+
+  async reprocessDocument(id: string): Promise<{ status: string; message: string; id: string }> {
+    const res = await api.post(`/api/documents/${id}/reprocess`);
+    return res.data;
   },
 
   async uploadPdf(file: File, options?: ProcessOptions): Promise<{ id: string; status: string; filename: string }> {
@@ -65,11 +147,6 @@ export const documentService = {
   // Alias for backward compatibility
   async processPdf(file: File, options?: ProcessOptions): Promise<any> {
     return this.uploadPdf(file, options);
-  },
-
-  async deleteDocument(id: string): Promise<{ status: string; id: string }> {
-    const res = await api.delete(`/api/documents/${id}`);
-    return res.data;
   },
 
   // Global voter records query

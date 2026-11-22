@@ -16,6 +16,7 @@ const pageTitles: Record<string, string> = {
   '/admin/users': 'User Management & Permissions',
   '/profile': 'My Profile & Security',
   '/upload': 'Upload Voter Document',
+  '/documents': 'All Uploaded Documents',
   '/extracted-data': 'Voter Records',
   '/voter-entries': 'Voter Details & Entry Management',
   '/payments': 'Payments Dashboard',

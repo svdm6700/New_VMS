@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   UploadCloud,
+  Files,
   TableProperties,
   CreditCard,
   Receipt,
@@ -144,6 +145,21 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
           >
             <UploadCloud className="w-4 h-4 shrink-0" />
             <span>Upload Voter Document</span>
+          </NavLink>
+
+          <NavLink
+            to="/documents"
+            onClick={() => onClose()}
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
+                isActive
+                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
+              }`
+            }
+          >
+            <Files className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
+            <span>All Documents</span>
           </NavLink>
 
           <NavLink

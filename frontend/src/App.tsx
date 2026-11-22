@@ -14,6 +14,7 @@ import { UserDashboard } from './pages/UserDashboard';
 import { UserManagement } from './pages/UserManagement';
 import { ProfilePage } from './pages/ProfilePage';
 import { UploadPDF } from './pages/UploadPDF';
+import { DocumentsPage } from './pages/Documents';
 import { ExtractedData } from './pages/ExtractedData';
 import { VoterEntriesPage } from './pages/VoterEntriesPage';
 import { PaymentsDashboard } from './pages/PaymentsDashboard';
@@ -127,6 +128,14 @@ function AppLayout() {
               }
             />
             <Route
+              path="/documents"
+              element={
+                <ProtectedRoute>
+                  <DocumentsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/extracted-data"
               element={
                 <ProtectedRoute>
@@ -152,7 +161,6 @@ function AppLayout() {
             />
 
             {/* Redirect legacy removed routes to Voter Records */}
-            <Route path="/documents" element={<Navigate to="/extracted-data" replace />} />
             <Route path="/reader" element={<Navigate to="/extracted-data" replace />} />
             <Route path="/text" element={<Navigate to="/extracted-data" replace />} />
             <Route path="/tables" element={<Navigate to="/extracted-data" replace />} />

@@ -246,7 +246,7 @@ class VoterRecordModel(Base):
 
     document = relationship("DocumentModel", back_populates="records")
     entries = relationship("VoterEntryModel", back_populates="voter", cascade="all, delete-orphan", order_by="desc(VoterEntryModel.created_at)")
-    payments = relationship("PaymentModel", back_populates="voter", cascade="all, delete-orphan", order_by="desc(PaymentModel.payment_date)")
+    payments = relationship("PaymentModel", back_populates="voter", order_by="desc(PaymentModel.payment_date)")
 
     __table_args__ = (
         Index("idx_voter_doc_serial", "document_id", "serial_no"),
@@ -336,7 +336,7 @@ class PaymentModel(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     transaction_id = Column(String(64), unique=True, nullable=False, index=True)
     receipt_number = Column(String(64), unique=True, nullable=False, index=True)
-    voter_id = Column(Integer, ForeignKey("voter_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    voter_id = Column(Integer, ForeignKey("voter_records.id", ondelete="SET NULL"), nullable=True, index=True)
     voter_entry_id = Column(Integer, ForeignKey("voter_entries.id", ondelete="SET NULL"), nullable=True, index=True)
     mobile_number = Column(String(15), nullable=True, default="", index=True)
     amount = Column(Numeric(12, 2), nullable=False)
@@ -345,6 +345,10 @@ class PaymentModel(Base):
     payment_status = Column(String(32), default="Paid", nullable=False, index=True) # Paid, Pending, Failed, Cancelled, Refunded
     transaction_reference = Column(String(128), nullable=True, index=True)
     remarks = Column(Text, nullable=True)
+    voter_name = Column(String(512), nullable=True)
+    epic_no = Column(String(128), nullable=True)
+    district = Column(String(150), nullable=True)
+    constituency = Column(String(150), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     verified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -367,15 +371,15 @@ class PaymentModel(Base):
             "receipt_number": self.receipt_number,
             "voter_id": self.voter_id,
             "voter_entry_id": self.voter_entry_id,
-            "voter_name": self.voter.voter_name if self.voter else "Not Available",
-            "epic_no": self.voter.voter_id if self.voter else "Not Available",
-            "relation_name": self.voter.relation_name if self.voter else "Not Available",
-            "relation_type": self.voter.relation_type if self.voter else "Not Available",
-            "age": self.voter.age if self.voter else "Not Available",
-            "gender": self.voter.gender if self.voter else "Not Available",
-            "house_no": self.voter.house_no if self.voter else "Not Available",
-            "district": getattr(voter_doc, "district", None) or "Not Available",
-            "constituency": getattr(voter_doc, "constituency", None) or "Not Available",
+            "voter_name": (self.voter.voter_name if self.voter else self.voter_name) or "Not Available",
+            "epic_no": (self.voter.voter_id if self.voter else self.epic_no) or "Not Available",
+            "relation_name": (self.voter.relation_name if self.voter else None) or "Not Available",
+            "relation_type": (self.voter.relation_type if self.voter else None) or "Not Available",
+            "age": (self.voter.age if self.voter else None) or "Not Available",
+            "gender": (self.voter.gender if self.voter else None) or "Not Available",
+            "house_no": (self.voter.house_no if self.voter else None) or "Not Available",
+            "district": (getattr(voter_doc, "district", None) or self.district) or "Not Available",
+            "constituency": (getattr(voter_doc, "constituency", None) or self.constituency) or "Not Available",
             "area": getattr(voter_doc, "area", None) or "Not Available",
             "ward_number": getattr(voter_doc, "ward_number", None) or "Not Available",
             "mobile_number": self.mobile_number,
@@ -496,7 +500,9 @@ def ensure_default_seed():
             # Documents & Upload module
             ("documents.view", "documents", "view", "View uploaded PDF documents and processing status"),
             ("documents.create", "documents", "create", "Upload voter documents and run extraction"),
-            ("documents.delete", "documents", "delete", "Delete uploaded documents and results"),
+            ("documents.download", "documents", "download", "Download uploaded original PDF documents"),
+            ("documents.reprocess", "documents", "reprocess", "Reprocess uploaded documents and re-extract voter rolls"),
+            ("documents.delete", "documents", "delete", "Delete uploaded documents and cascade exclusive voter records"),
 
             # Users module
             ("users.view", "users", "view", "View system users and status"),

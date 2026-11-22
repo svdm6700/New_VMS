@@ -874,9 +874,47 @@ async def upload_document(
     }
 
 # -------------------------------------------------------------
-# 5. List Documents (RBAC Enforced)
+# 5. List Documents & Summary (RBAC Enforced)
 # -------------------------------------------------------------
-@app.get("/api/documents")
+@app.get("/api/documents/summary", tags=["Document Management"])
+def get_documents_summary(
+    current_user: Optional[UserModel] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Dynamically compute summary KPI metrics for all uploaded documents directly from PostgreSQL.
+    """
+    q = db.query(DocumentModel)
+    if current_user and current_user.role.lower() != "admin":
+        q = q.filter(DocumentModel.uploaded_by == current_user.id)
+
+    total_docs = q.count()
+    completed_docs = q.filter(DocumentModel.processing_status == "completed").count()
+    processing_docs = q.filter(DocumentModel.processing_status.in_(["processing", "uploaded", "pending"])).count()
+    failed_docs = q.filter(DocumentModel.processing_status == "failed").count()
+
+    # Total storage used in bytes
+    storage_q = db.query(func.coalesce(func.sum(DocumentModel.file_size), 0))
+    if current_user and current_user.role.lower() != "admin":
+        storage_q = storage_q.filter(DocumentModel.uploaded_by == current_user.id)
+    total_storage = int(storage_q.scalar() or 0)
+
+    # Total extracted voters
+    voter_q = db.query(func.count(VoterRecordModel.id))
+    if current_user and current_user.role.lower() != "admin":
+        voter_q = voter_q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id).filter(DocumentModel.uploaded_by == current_user.id)
+    total_voters = int(voter_q.scalar() or 0)
+
+    return {
+        "total_documents": total_docs,
+        "completed_documents": completed_docs,
+        "processing_documents": processing_docs,
+        "failed_documents": failed_docs,
+        "total_voters": total_voters,
+        "total_storage_bytes": total_storage
+    }
+
+@app.get("/api/documents", tags=["Document Management"])
 def list_documents(
     query: Optional[str] = None,
     status: Optional[str] = None,
@@ -884,8 +922,13 @@ def list_documents(
     constituency: Optional[str] = None,
     area: Optional[str] = None,
     ward_number: Optional[str] = None,
+    uploaded_by: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     sort_by: str = "uploaded_at",
     order: str = "desc",
+    page: Optional[int] = None,
+    limit: Optional[int] = None,
     current_user: Optional[UserModel] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
@@ -894,47 +937,111 @@ def list_documents(
     # RBAC: If standard user, filter by their documents only
     if current_user and current_user.role.lower() != "admin":
         q = q.filter(DocumentModel.uploaded_by == current_user.id)
+    elif uploaded_by is not None:
+        q = q.filter(DocumentModel.uploaded_by == uploaded_by)
 
     if query:
+        search_term = f"%{query.strip()}%"
         q = q.filter(
             or_(
-                DocumentModel.original_filename.ilike(f"%{query}%"),
-                DocumentModel.district.ilike(f"%{query}%"),
-                DocumentModel.constituency.ilike(f"%{query}%"),
-                DocumentModel.area.ilike(f"%{query}%"),
-                DocumentModel.ward_number.ilike(f"%{query}%")
+                DocumentModel.id.ilike(search_term),
+                DocumentModel.original_filename.ilike(search_term),
+                DocumentModel.district.ilike(search_term),
+                DocumentModel.constituency.ilike(search_term),
+                DocumentModel.area.ilike(search_term),
+                DocumentModel.ward_number.ilike(search_term)
             )
         )
     if status and status != "all":
         q = q.filter(DocumentModel.processing_status == status)
     if district and district != "all":
-        q = q.filter(DocumentModel.district.ilike(f"%{district}%"))
+        q = q.filter(DocumentModel.district.ilike(f"%{district.strip()}%"))
     if constituency and constituency != "all":
-        q = q.filter(DocumentModel.constituency.ilike(f"%{constituency}%"))
+        q = q.filter(DocumentModel.constituency.ilike(f"%{constituency.strip()}%"))
     if area and area != "all":
-        q = q.filter(DocumentModel.area.ilike(f"%{area}%"))
+        q = q.filter(DocumentModel.area.ilike(f"%{area.strip()}%"))
     if ward_number and ward_number != "all":
-        q = q.filter(DocumentModel.ward_number.ilike(f"%{ward_number}%"))
+        q = q.filter(DocumentModel.ward_number.ilike(f"%{ward_number.strip()}%"))
+
+    # Date Range filtering
+    if date_from:
+        try:
+            d_from = datetime.strptime(date_from.strip(), "%Y-%m-%d")
+            q = q.filter(DocumentModel.uploaded_at >= d_from)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            d_to = datetime.strptime(date_to.strip(), "%Y-%m-%d") + timedelta(days=1)
+            q = q.filter(DocumentModel.uploaded_at < d_to)
+        except ValueError:
+            pass
+
+    total_filtered = q.count()
 
     order_col = getattr(DocumentModel, sort_by, DocumentModel.uploaded_at)
     q = q.order_by(desc(order_col) if order.lower() == "desc" else asc(order_col))
 
-    docs = q.all()
+    # Apply pagination if requested
+    use_pagination = page is not None or limit is not None
+    effective_page = page or 1
+    effective_limit = limit or 20
+
+    if use_pagination:
+        docs = q.offset((effective_page - 1) * effective_limit).limit(effective_limit).all()
+    else:
+        docs = q.all()
+
+    # Pre-fetch voter counts per document
+    doc_ids = [d.id for d in docs]
+    voter_counts = {}
+    if doc_ids:
+        counts = db.query(
+            VoterRecordModel.document_id,
+            func.count(VoterRecordModel.id)
+        ).filter(VoterRecordModel.document_id.in_(doc_ids)).group_by(VoterRecordModel.document_id).all()
+        voter_counts = dict(counts)
+
     out = []
     for d in docs:
         d_dict = d.to_dict()
         d_dict["filename"] = d.original_filename
+        d_dict["document_name"] = d.original_filename
+        d_dict["file_type"] = Path(d.original_filename).suffix.upper().replace(".", "") or "PDF"
         d_dict["page_count"] = d.total_pages
+        d_dict["extracted_voters"] = voter_counts.get(d.id, 0)
         d_dict["status"] = d.processing_status
         d_dict["created_at"] = d_dict["uploaded_at"]
         d_dict["processing_type"] = "Electoral Roll / Text"
+        d_dict["uploader_name"] = d.uploader.full_name if d.uploader else (d.uploader.username if d.uploader else "System")
         out.append(d_dict)
+
+    if use_pagination:
+        # Also include overall summary metrics
+        total_storage_scalar = db.query(func.coalesce(func.sum(DocumentModel.file_size), 0)).scalar() or 0
+        total_voters_scalar = db.query(func.count(VoterRecordModel.id)).scalar() or 0
+        summary_obj = {
+            "total_documents": db.query(DocumentModel).count(),
+            "completed_documents": db.query(DocumentModel).filter(DocumentModel.processing_status == "completed").count(),
+            "processing_documents": db.query(DocumentModel).filter(DocumentModel.processing_status.in_(["processing", "uploaded", "pending"])).count(),
+            "failed_documents": db.query(DocumentModel).filter(DocumentModel.processing_status == "failed").count(),
+            "total_voters": int(total_voters_scalar),
+            "total_storage_bytes": int(total_storage_scalar)
+        }
+        return {
+            "documents": out,
+            "total": total_filtered,
+            "page": effective_page,
+            "limit": effective_limit,
+            "pages": (total_filtered + effective_limit - 1) // effective_limit if effective_limit > 0 else 1,
+            "summary": summary_obj
+        }
     return out
 
 # -------------------------------------------------------------
 # 6. Get Document Details (RBAC Check)
 # -------------------------------------------------------------
-@app.get("/api/documents/{doc_id}")
+@app.get("/api/documents/{doc_id}", tags=["Document Management"])
 def get_document(
     doc_id: str,
     current_user: Optional[UserModel] = Depends(get_optional_current_user),
@@ -944,7 +1051,6 @@ def get_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    # Access check: Standard users can only view their own documents
     if current_user and current_user.role.lower() != "admin" and doc.uploaded_by != current_user.id:
         raise HTTPException(status_code=403, detail="You do not have permission to view this document.")
 
@@ -957,11 +1063,20 @@ def get_document(
         except Exception:
             pass
 
+    voters_count = db.query(VoterRecordModel).filter(VoterRecordModel.document_id == doc_id).count()
+
     info = doc.to_dict()
     info["filename"] = doc.original_filename
+    info["document_name"] = doc.original_filename
+    info["file_type"] = Path(doc.original_filename).suffix.upper().replace(".", "") or "PDF"
     info["page_count"] = doc.total_pages
     info["status"] = doc.processing_status
     info["created_at"] = info["uploaded_at"]
+    info["extracted_voters"] = voters_count
+    info["uploader_name"] = doc.uploader.full_name if doc.uploader else (doc.uploader.username if doc.uploader else "System")
+
+    pdf_file = resolve_pdf_path(doc.stored_file_path, doc_id)
+    info["file_exists_on_disk"] = bool(pdf_file and pdf_file.exists())
 
     if result_data:
         result_data["id"] = doc_id
@@ -971,15 +1086,9 @@ def get_document(
         result_data["ward_number"] = doc.ward_number
         result_data["metadata"] = {
             **result_data.get("metadata", {}),
-            "filename": doc.original_filename,
-            "page_count": doc.total_pages,
-            "processing_status": doc.processing_status,
-            "uploaded_by": doc.uploaded_by,
-            "district": doc.district,
-            "constituency": doc.constituency,
-            "area": doc.area,
-            "ward_number": doc.ward_number
+            **info
         }
+        result_data["extracted_voters"] = voters_count
         return result_data
     else:
         return {
@@ -989,6 +1098,7 @@ def get_document(
             "area": doc.area,
             "ward_number": doc.ward_number,
             "metadata": info,
+            "extracted_voters": voters_count,
             "pages": [],
             "records": [],
             "table_rows_te": [],
@@ -998,36 +1108,11 @@ def get_document(
         }
 
 # -------------------------------------------------------------
-# 7. Serve Original PDF File
+# 7. Serve / Download Original PDF File
 # -------------------------------------------------------------
-@app.get("/api/documents/{doc_id}/file")
-def get_document_file(
-    doc_id: str,
-    current_user: Optional[UserModel] = Depends(get_optional_current_user),
-    db: Session = Depends(get_db)
-):
-    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Original PDF file not found.")
-
-    pdf_file = resolve_pdf_path(doc.stored_file_path, doc_id)
-    if not pdf_file or not pdf_file.exists():
-        raise HTTPException(status_code=404, detail="Original PDF file not found.")
-
-    if current_user and current_user.role.lower() != "admin" and doc.uploaded_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Permission denied to access this file.")
-
-    return FileResponse(
-        str(pdf_file),
-        media_type="application/pdf",
-        filename=doc.original_filename
-    )
-
-# -------------------------------------------------------------
-# 8. Delete Document
-# -------------------------------------------------------------
-@app.delete("/api/documents/{doc_id}")
-def delete_document(
+@app.get("/api/documents/{doc_id}/download", tags=["Document Management"])
+@app.get("/api/documents/{doc_id}/file", tags=["Document Management"])
+def download_document(
     doc_id: str,
     current_user: Optional[UserModel] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
@@ -1037,26 +1122,259 @@ def delete_document(
         raise HTTPException(status_code=404, detail="Document not found.")
 
     if current_user and current_user.role.lower() != "admin" and doc.uploaded_by != current_user.id:
-        raise HTTPException(status_code=403, detail="You do not have permission to delete this document.")
+        raise HTTPException(status_code=403, detail="Permission denied to access this file.")
 
     pdf_file = resolve_pdf_path(doc.stored_file_path, doc_id)
+    if not pdf_file or not pdf_file.exists():
+        raise HTTPException(status_code=404, detail="Original PDF file not found on disk.")
+
+    return FileResponse(
+        str(pdf_file),
+        media_type="application/pdf",
+        filename=doc.original_filename,
+        headers={"Content-Disposition": f'attachment; filename="{doc.original_filename}"'}
+    )
+
+# -------------------------------------------------------------
+# 8. Document Deletion Preview & Cascade Deletion (Safe Retention)
+# -------------------------------------------------------------
+@app.get("/api/documents/{doc_id}/deletion-preview", tags=["Document Management"])
+def get_document_deletion_preview(
+    doc_id: str,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Compute deletion impact preview:
+    - Number of exclusive voters that will be deleted
+    - Shared voters belonging to other documents that will be preserved
+    - Payment records retained under financial retention policy
+    """
+    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    if current_user.role.lower() != "admin" and doc.uploaded_by != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not have permission to delete this document.")
+
+    linked_voter_ids = [r[0] for r in db.query(VoterRecordModel.id).filter(VoterRecordModel.document_id == doc_id).all()]
+    total_voters = len(linked_voter_ids)
+
+    # Check shared voters in other documents
+    shared_epics = []
+    if linked_voter_ids:
+        doc_epics = [
+            r[0] for r in db.query(VoterRecordModel.voter_id)
+            .filter(VoterRecordModel.document_id == doc_id)
+            .filter(VoterRecordModel.voter_id != "Not Available")
+            .all()
+        ]
+        if doc_epics:
+            other_matches = db.query(VoterRecordModel.voter_id).filter(
+                VoterRecordModel.document_id != doc_id,
+                VoterRecordModel.voter_id.in_(doc_epics)
+            ).distinct().all()
+            shared_epics = [r[0] for r in other_matches]
+
+    payments_count = 0
+    voter_entries_count = 0
+    if linked_voter_ids:
+        payments_count = db.query(PaymentModel).filter(PaymentModel.voter_id.in_(linked_voter_ids)).count()
+        voter_entries_count = db.query(VoterEntryModel).filter(VoterEntryModel.voter_id.in_(linked_voter_ids)).count()
+
+    exclusive_voters_count = total_voters - len(shared_epics)
+    if exclusive_voters_count < 0:
+        exclusive_voters_count = total_voters
+
+    return {
+        "document_id": doc_id,
+        "document_name": doc.original_filename,
+        "file_size": doc.file_size,
+        "district": doc.district,
+        "constituency": doc.constituency,
+        "voters_count": total_voters,
+        "exclusive_voters_count": exclusive_voters_count,
+        "shared_voters_count": len(shared_epics),
+        "processing_records_count": doc.total_pages or 0,
+        "payments_count": payments_count,
+        "voter_entries_count": voter_entries_count,
+        "warning": (
+            "Deleting this document will permanently delete all voter records extracted exclusively "
+            "from this document. This action will also remove associated document processing data. "
+            "Financial payment transactions and audit logs are securely retained under compliance retention rules."
+        ),
+        "can_delete": True
+    }
+
+@app.delete("/api/documents/{doc_id}", tags=["Document Management"])
+def delete_document(
+    doc_id: str,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Atomic document deletion:
+    1. Preserves financial payment records and audit logs via snapshot metadata.
+    2. Cascades and deletes exclusive voter records extracted from this document.
+    3. Deletes document database record.
+    4. Safely cleans physical files on disk after database transaction is committed.
+    5. Logs deletion event in the system audit log.
+    """
+    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    if current_user.role.lower() != "admin" and doc.uploaded_by != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not have permission to delete this document.")
+
+    doc_voters = db.query(VoterRecordModel).filter(VoterRecordModel.document_id == doc_id).all()
+    voter_ids = [v.id for v in doc_voters]
+    deleted_voters_count = len(voter_ids)
+    doc_name = doc.original_filename
+    doc_stored_path = doc.stored_file_path
+
+    # Financial Retention: snapshot voter details on payments before voter deletion
+    if voter_ids:
+        linked_payments = db.query(PaymentModel).filter(PaymentModel.voter_id.in_(voter_ids)).all()
+        for p in linked_payments:
+            v_rec = next((v for v in doc_voters if v.id == p.voter_id), None)
+            if v_rec:
+                if not p.voter_name or p.voter_name == "Not Available":
+                    p.voter_name = v_rec.voter_name
+                if not p.epic_no or p.epic_no == "Not Available":
+                    p.epic_no = v_rec.voter_id
+                if not p.district or p.district == "Not Available":
+                    p.district = doc.district
+                if not p.constituency or p.constituency == "Not Available":
+                    p.constituency = doc.constituency
+
+                # Check if this voter exists in ANOTHER active document (Case B)
+                if v_rec.voter_id and v_rec.voter_id != "Not Available":
+                    alt_voter = db.query(VoterRecordModel).filter(
+                        VoterRecordModel.document_id != doc_id,
+                        VoterRecordModel.voter_id == v_rec.voter_id
+                    ).first()
+                    if alt_voter:
+                        p.voter_id = alt_voter.id
+                    else:
+                        p.voter_id = None
+                else:
+                    p.voter_id = None
+
+    try:
+        # Delete voter records for this document
+        if voter_ids:
+            db.query(VoterRecordModel).filter(VoterRecordModel.document_id == doc_id).delete(synchronize_session=False)
+
+        # Delete document record
+        db.delete(doc)
+
+        # Record Audit Log
+        audit = AuditLogModel(
+            user_id=current_user.id,
+            action="DOCUMENT_DELETED",
+            details=json.dumps({
+                "document_id": doc_id,
+                "document_name": doc_name,
+                "deleted_voters_count": deleted_voters_count,
+                "deleted_by": current_user.username
+            }),
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(audit)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete document and cascaded voter records from database: {str(exc)}"
+        )
+
+    # Physical File Cleanup (after database commit)
+    cleaned_files = []
+    failed_files = []
+
+    pdf_file = resolve_pdf_path(doc_stored_path, doc_id)
     if pdf_file and pdf_file.exists():
-        try: pdf_file.unlink()
-        except Exception: pass
+        try:
+            pdf_file.unlink()
+            cleaned_files.append(str(pdf_file.name))
+        except Exception:
+            failed_files.append(str(pdf_file.name))
 
     res_path = resolve_result_path(doc_id)
     if res_path and res_path.exists():
-        try: res_path.unlink()
-        except Exception: pass
+        try:
+            res_path.unlink()
+            cleaned_files.append(str(res_path.name))
+        except Exception:
+            failed_files.append(str(res_path.name))
 
-    db.delete(doc)
+    return {
+        "status": "success",
+        "message": f"Document '{doc_name}' and {deleted_voters_count} exclusive voter records deleted successfully.",
+        "id": doc_id,
+        "deleted_voters_count": deleted_voters_count,
+        "cleaned_files": cleaned_files,
+        "failed_files": failed_files
+    }
+
+# -------------------------------------------------------------
+# 8b. Reprocess Document
+# -------------------------------------------------------------
+@app.post("/api/documents/{doc_id}/reprocess", tags=["Document Management"])
+def reprocess_document(
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Trigger re-processing of an existing uploaded document:
+    - Clears old voter extraction records for this document
+    - Resets status to 'processing'
+    - Dispatches background extraction task
+    """
+    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    if current_user.role.lower() != "admin" and doc.uploaded_by != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not have permission to reprocess this document.")
+
+    pdf_file = resolve_pdf_path(doc.stored_file_path, doc_id)
+    if not pdf_file or not pdf_file.exists():
+        raise HTTPException(status_code=400, detail="Physical PDF file not found on disk for re-processing.")
+
+    doc.processing_status = "processing"
+    doc.processing_error = None
+    doc.processed_at = None
+
+    # Delete existing voter records for clean extraction
+    db.query(VoterRecordModel).filter(VoterRecordModel.document_id == doc_id).delete()
     db.commit()
-    return {"status": "deleted", "id": doc_id}
+
+    background_tasks.add_task(
+        run_background_extraction,
+        doc_id=doc_id,
+        file_path=pdf_file,
+        filename=doc.original_filename,
+        ollama_url=settings.OLLAMA_BASE_URL,
+        model_name=settings.OLLAMA_MODEL,
+        use_ai=settings.OLLAMA_ENABLED
+    )
+
+    return {
+        "status": "processing",
+        "message": f"Reprocessing triggered for document '{doc.original_filename}'.",
+        "id": doc_id
+    }
 
 # -------------------------------------------------------------
 # 9. Document Specific Voter Records
 # -------------------------------------------------------------
-@app.get("/api/documents/{doc_id}/records")
+@app.get("/api/documents/{doc_id}/records", tags=["Document Management"])
+@app.get("/api/documents/{doc_id}/voters", tags=["Document Management"])
 def get_document_records(
     doc_id: str,
     page: int = Query(1, ge=1),
@@ -1516,6 +1834,10 @@ def create_voter_entry(
         payment_method="Cash",
         payment_status="Paid",
         remarks=req.remarks.strip() if req.remarks else None,
+        voter_name=voter.voter_name,
+        epic_no=voter.voter_id,
+        district=getattr(voter.document, "district", "") if voter.document else "",
+        constituency=getattr(voter.document, "constituency", "") if voter.document else "",
         created_by=current_user.id,
         verified_by=current_user.id,
         verified_at=now_utc,
@@ -2235,6 +2557,10 @@ def create_payment(
         payment_status=status_val,
         transaction_reference=ref_val,
         remarks=req.remarks.strip() if req.remarks else None,
+        voter_name=voter.voter_name,
+        epic_no=voter.voter_id,
+        district=getattr(voter.document, "district", "") if voter.document else "",
+        constituency=getattr(voter.document, "constituency", "") if voter.document else "",
         created_by=current_user.id,
         verified_by=verified_by_id,
         verified_at=verified_at_dt,
