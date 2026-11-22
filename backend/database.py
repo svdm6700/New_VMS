@@ -247,6 +247,7 @@ class VoterRecordModel(Base):
     document = relationship("DocumentModel", back_populates="records")
     entries = relationship("VoterEntryModel", back_populates="voter", cascade="all, delete-orphan", order_by="desc(VoterEntryModel.created_at)")
     payments = relationship("PaymentModel", back_populates="voter", order_by="desc(PaymentModel.payment_date)")
+    amount_allocations = relationship("VoterAmountAllocationModel", back_populates="voter", cascade="all, delete-orphan", order_by="desc(VoterAmountAllocationModel.allocation_date)")
 
     __table_args__ = (
         Index("idx_voter_doc_serial", "document_id", "serial_no"),
@@ -278,6 +279,8 @@ class VoterRecordModel(Base):
             "payments_count": len(self.payments) if self.payments is not None else 0,
             "total_paid_amount": sum(float(p.amount or 0) for p in self.payments if p.payment_status == "Paid") if self.payments else 0.0,
             "total_pending_amount": sum(float(p.amount or 0) for p in self.payments if p.payment_status == "Pending") if self.payments else 0.0,
+            "allocations_count": len(self.amount_allocations) if self.amount_allocations is not None else 0,
+            "total_allocated_amount": sum(float(a.amount or 0) for a in self.amount_allocations if a.status == "ACTIVE") if self.amount_allocations is not None else 0.0,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -430,6 +433,178 @@ class PaymentAuditLogModel(Base):
             "performed_at": self.performed_at.isoformat() if self.performed_at else None,
         }
 
+class WalletModel(Base):
+    __tablename__ = "wallets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_type = Column(String(16), nullable=False, default="USER") # "ADMIN" or "USER"
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    available_balance = Column(Numeric(14, 2), default=0.00, nullable=False)
+    currency = Column(String(8), default="INR", nullable=False)
+    status = Column(String(16), default="ACTIVE", nullable=False) # "ACTIVE", "INACTIVE", "SUSPENDED"
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    user = relationship("UserModel")
+    transactions = relationship("WalletTransactionModel", back_populates="wallet", cascade="all, delete-orphan", order_by="desc(WalletTransactionModel.created_at)")
+
+    __table_args__ = (
+        Index("idx_wallet_owner_unique", "owner_type", "owner_id", unique=True),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "owner_type": self.owner_type,
+            "owner_id": self.owner_id,
+            "owner_username": self.user.username if self.user else None,
+            "owner_full_name": self.user.full_name if self.user else None,
+            "available_balance": float(self.available_balance or 0.0),
+            "currency": self.currency,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+class WalletTransactionModel(Base):
+    __tablename__ = "wallet_transactions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transaction_id = Column(String(64), unique=True, index=True, nullable=False)
+    wallet_id = Column(Integer, ForeignKey("wallets.id", ondelete="CASCADE"), index=True, nullable=False)
+    transaction_type = Column(String(64), index=True, nullable=False)
+    # Types: ADMIN_WALLET_CREDIT, ADMIN_TO_USER_ALLOCATION, USER_WALLET_CREDIT, VOTER_AMOUNT_DEBIT, TRANSACTION_REVERSAL, REFUND
+    direction = Column(String(16), nullable=False) # "CREDIT" or "DEBIT"
+    amount = Column(Numeric(14, 2), nullable=False)
+    balance_before = Column(Numeric(14, 2), nullable=False)
+    balance_after = Column(Numeric(14, 2), nullable=False)
+    reference_type = Column(String(64), nullable=True) # "FUNDING", "USER_ALLOCATION", "VOTER_ALLOCATION", "REVERSAL"
+    reference_id = Column(String(128), nullable=True)
+    idempotency_key = Column(String(128), index=True, nullable=True)
+    payment_method = Column(String(64), nullable=True) # Cash, Bank Transfer, NetBanking, Cheque, UPI
+    remarks = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    wallet = relationship("WalletModel", back_populates="transactions")
+    creator = relationship("UserModel", foreign_keys=[created_by])
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "transaction_id": self.transaction_id,
+            "wallet_id": self.wallet_id,
+            "transaction_type": self.transaction_type,
+            "direction": self.direction,
+            "amount": float(self.amount or 0.0),
+            "balance_before": float(self.balance_before or 0.0),
+            "balance_after": float(self.balance_after or 0.0),
+            "reference_type": self.reference_type,
+            "reference_id": self.reference_id,
+            "idempotency_key": self.idempotency_key,
+            "payment_method": self.payment_method,
+            "remarks": self.remarks,
+            "created_by": self.created_by,
+            "creator_username": self.creator.username if self.creator else "System",
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+class UserGeographicAssignmentModel(Base):
+    __tablename__ = "user_geographic_assignments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    district = Column(String(150), nullable=False)
+    constituency = Column(String(150), nullable=False)
+    wards = Column(Text, nullable=False) # JSON list or comma-separated string, e.g. ["1", "2"]
+    area = Column(String(200), nullable=True)
+    start_date = Column(DateTime(timezone=True), nullable=True)
+    end_date = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(32), default="ACTIVE", nullable=False) # "ACTIVE", "INACTIVE"
+    assigned_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    user = relationship("UserModel", foreign_keys=[user_id])
+    assigner = relationship("UserModel", foreign_keys=[assigned_by])
+
+    def to_dict(self):
+        import json
+        ward_list = []
+        if self.wards:
+            try:
+                raw = self.wards.strip()
+                ward_list = json.loads(raw) if raw.startswith("[") else [w.strip() for w in raw.split(",") if w.strip()]
+            except Exception:
+                ward_list = [w.strip() for w in self.wards.split(",") if w.strip()]
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "user_username": self.user.username if self.user else None,
+            "user_full_name": self.user.full_name if self.user else None,
+            "district": self.district,
+            "constituency": self.constituency,
+            "wards": ward_list,
+            "wards_display": ", ".join(str(w) for w in ward_list),
+            "area": self.area,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "status": self.status,
+            "assigned_by": self.assigned_by,
+            "assigner_username": self.assigner.username if self.assigner else "Admin",
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+class VoterAmountAllocationModel(Base):
+    __tablename__ = "voter_amount_allocations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    allocation_reference = Column(String(64), unique=True, index=True, nullable=False)
+    voter_id = Column(Integer, ForeignKey("voter_records.id", ondelete="CASCADE"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    wallet_transaction_id = Column(Integer, ForeignKey("wallet_transactions.id", ondelete="SET NULL"), nullable=True)
+    amount = Column(Numeric(14, 2), nullable=False)
+    allocation_date = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    status = Column(String(32), default="ACTIVE", nullable=False) # "ACTIVE", "REVERSED"
+    remarks = Column(Text, nullable=True)
+    reversal_reason = Column(Text, nullable=True)
+    reversed_at = Column(DateTime(timezone=True), nullable=True)
+    reversed_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    voter = relationship("VoterRecordModel", foreign_keys=[voter_id], back_populates="amount_allocations")
+    user = relationship("UserModel", foreign_keys=[user_id])
+    wallet_transaction = relationship("WalletTransactionModel")
+    reverser = relationship("UserModel", foreign_keys=[reversed_by])
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "allocation_reference": self.allocation_reference,
+            "voter_id": self.voter_id,
+            "voter_name": self.voter.voter_name if self.voter else "N/A",
+            "voter_epic": self.voter.voter_id if self.voter else "N/A",
+            "house_no": self.voter.house_no if self.voter else "N/A",
+            "district": (self.voter.document.district if self.voter and self.voter.document else "N/A"),
+            "constituency": (self.voter.document.constituency if self.voter and self.voter.document else "N/A"),
+            "ward_number": (self.voter.document.ward_number if self.voter and self.voter.document else "N/A"),
+            "area": (self.voter.document.area if self.voter and self.voter.document else "N/A"),
+            "user_id": self.user_id,
+            "user_name": self.user.full_name if self.user else (self.user.username if self.user else "N/A"),
+            "user_username": self.user.username if self.user else "N/A",
+            "wallet_transaction_id": self.wallet_transaction_id,
+            "transaction_id": self.wallet_transaction.transaction_id if self.wallet_transaction else None,
+            "amount": float(self.amount or 0.0),
+            "allocation_date": self.allocation_date.isoformat() if self.allocation_date else None,
+            "status": self.status,
+            "remarks": self.remarks,
+            "reversal_reason": self.reversal_reason,
+            "reversed_at": self.reversed_at.isoformat() if self.reversed_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
 def ensure_database_exists():
     """
     Connects to the default PostgreSQL maintenance database ('postgres')
@@ -524,6 +699,15 @@ def ensure_default_seed():
             ("payments.delete", "payments", "delete", "Delete payment records (authorized only)"),
             ("payments.export", "payments", "export", "Export payment ledger to Excel/CSV"),
             ("payments.print_receipt", "payments", "print_receipt", "Print and download official payment receipts"),
+
+            # Wallet & Voter Allocation module
+            ("wallet.view", "wallets", "view", "View Wallets and transaction records"),
+            ("wallet.fund", "wallets", "create", "Fund and add money to Admin Wallet"),
+            ("wallet.allocate", "wallets", "edit", "Allocate wallet money from Admin to Users"),
+            ("wallet.assign_voter", "wallets", "create", "Assign and deduct wallet amount for authorized voters"),
+            ("wallet.reverse", "wallets", "delete", "Reverse voter amount allocations and refund wallet"),
+            ("geo.view", "geo_assignments", "view", "View geographic constituency and ward assignments"),
+            ("geo.manage", "geo_assignments", "edit", "Manage user constituency and ward assignments"),
         ]
 
         code_to_perm_id = {}
@@ -550,6 +734,7 @@ def ensure_default_seed():
                     "voters.view", "voters.create", "voters.edit",
                     "voter_entries.view", "voter_entries.create", "voter_entries.edit",
                     "payments.view", "payments.create", "payments.edit", "payments.print_receipt",
+                    "wallet.view", "wallet.assign_voter", "geo.view",
                     "documents.view", "documents.create",
                     "settings.view"
                 ]
@@ -561,6 +746,7 @@ def ensure_default_seed():
                     "voters.view",
                     "voter_entries.view",
                     "payments.view", "payments.print_receipt",
+                    "wallet.view", "geo.view",
                     "documents.view",
                     "settings.view"
                 ]
@@ -572,6 +758,7 @@ def ensure_default_seed():
                     "voters.view",
                     "voter_entries.view", "voter_entries.create",
                     "payments.view", "payments.create", "payments.print_receipt",
+                    "wallet.view", "wallet.assign_voter", "geo.view",
                     "documents.view", "documents.create",
                     "settings.view"
                 ]
@@ -691,6 +878,26 @@ def ensure_default_seed():
             db.commit()
             if existing_entries:
                 print(f"[VMS Payments] Seeded {len(existing_entries)} initial payments from voter entries.")
+
+        # 7. Ensure Admin Wallet exists
+        if admin_user:
+            admin_wallet = db.query(WalletModel).filter(
+                WalletModel.owner_type == "ADMIN",
+                WalletModel.owner_id == admin_user.id
+            ).first()
+            if not admin_wallet:
+                admin_wallet = WalletModel(
+                    owner_type="ADMIN",
+                    owner_id=admin_user.id,
+                    available_balance=0.00,
+                    currency="INR",
+                    status="ACTIVE",
+                    created_at=utcnow(),
+                    updated_at=utcnow()
+                )
+                db.add(admin_wallet)
+                db.commit()
+                print(f"[VMS Wallet] Initialized master Admin Wallet for user '{admin_user.username}'.")
 
         print("[VMS RBAC] Seed permissions, roles, and user mappings verified successfully.")
 

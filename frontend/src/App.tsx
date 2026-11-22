@@ -18,6 +18,8 @@ import { DocumentsPage } from './pages/Documents';
 import { ExtractedData } from './pages/ExtractedData';
 import { VoterEntriesPage } from './pages/VoterEntriesPage';
 import { PaymentsDashboard } from './pages/PaymentsDashboard';
+import { WalletManagement } from './pages/WalletManagement';
+import { MyWalletPage } from './pages/MyWalletPage';
 import { Settings } from './pages/Settings';
 
 const RootRedirect: React.FC = () => {
@@ -156,6 +158,32 @@ function AppLayout() {
               element={
                 <ProtectedRoute>
                   <PaymentsDashboard />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Wallet Management & Voter Allocation */}
+            <Route
+              path="/admin/wallets"
+              element={
+                <ProtectedRoute requiredRole="admin">
+                  <WalletManagement />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/wallets"
+              element={
+                <ProtectedRoute requiredRole="admin">
+                  <WalletManagement />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/my-wallet"
+              element={
+                <ProtectedRoute>
+                  <MyWalletPage />
                 </ProtectedRoute>
               }
             />

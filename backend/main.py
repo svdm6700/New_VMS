@@ -1,10 +1,12 @@
 import sys
 import uuid
+from uuid import uuid4
 import json
 import os
 import re
 import csv
 from datetime import datetime, timezone, timedelta, date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional, List
 from io import BytesIO, StringIO
@@ -32,7 +34,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc, text, func, case
 
@@ -46,7 +48,9 @@ try:
         init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel,
         UserModel, RoleModel, VoterEntryModel, PermissionModel,
         RolePermissionModel, UserRoleModel, AuditLogModel,
-        PaymentModel, PaymentAuditLogModel
+        PaymentModel, PaymentAuditLogModel,
+        WalletModel, WalletTransactionModel, UserGeographicAssignmentModel,
+        VoterAmountAllocationModel
     )
     from backend.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
     from backend.auth_deps import get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission
@@ -58,7 +62,9 @@ except ImportError:
         init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel,
         UserModel, RoleModel, VoterEntryModel, PermissionModel,
         RolePermissionModel, UserRoleModel, AuditLogModel,
-        PaymentModel, PaymentAuditLogModel
+        PaymentModel, PaymentAuditLogModel,
+        WalletModel, WalletTransactionModel, UserGeographicAssignmentModel,
+        VoterAmountAllocationModel
     )
     from security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
     from auth_deps import get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission
@@ -3544,3 +3550,1149 @@ def get_audit_logs(
     """Return recent audit logs for role and permission changes."""
     logs = db.query(AuditLogModel).order_by(desc(AuditLogModel.created_at)).limit(limit).all()
     return [l.to_dict() for l in logs]
+
+# =====================================================================
+# 13. WALLET MANAGEMENT & CONSTITUENCY/WARD VOTER ALLOCATION
+# =====================================================================
+
+class FundAdminWalletRequest(BaseModel):
+    amount: float = Field(..., gt=0, description="Funding amount must be greater than zero")
+    transaction_date: Optional[datetime] = None
+    payment_method: str = "Bank Transfer"
+    transaction_reference: Optional[str] = None
+    funding_source: Optional[str] = "Manual Entry"
+    verification_status: Optional[str] = "Verified"
+    remarks: Optional[str] = None
+
+class AllocateUserWalletRequest(BaseModel):
+    user_id: int
+    amount: float = Field(..., gt=0, description="Allocation amount must be greater than zero")
+    allocation_date: Optional[datetime] = None
+    remarks: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+class CreateGeographicAssignmentRequest(BaseModel):
+    user_id: int
+    district: str
+    constituency: str
+    wards: List[str] = Field(default_factory=list)
+    area: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    status: str = "ACTIVE"
+
+class UpdateGeographicAssignmentRequest(BaseModel):
+    district: Optional[str] = None
+    constituency: Optional[str] = None
+    wards: Optional[List[str]] = None
+    area: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    status: Optional[str] = None
+
+class AssignVoterAmountRequest(BaseModel):
+    voter_id: int
+    amount: float = Field(..., gt=0, description="Amount to assign must be greater than zero")
+    assignment_date: Optional[datetime] = None
+    remarks: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+class ReverseAllocationRequest(BaseModel):
+    reason: str = Field(..., min_length=3, description="A valid reason is required for reversal")
+
+def get_or_create_admin_wallet(db: Session, admin_id: int) -> WalletModel:
+    w = db.query(WalletModel).filter(WalletModel.owner_type == "ADMIN", WalletModel.owner_id == admin_id).first()
+    if not w:
+        w = WalletModel(
+            owner_type="ADMIN",
+            owner_id=admin_id,
+            available_balance=Decimal("0.00"),
+            currency="INR",
+            status="ACTIVE",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
+        )
+        db.add(w)
+        db.commit()
+        db.refresh(w)
+    return w
+
+def get_or_create_user_wallet(db: Session, user_id: int) -> WalletModel:
+    w = db.query(WalletModel).filter(WalletModel.owner_type == "USER", WalletModel.owner_id == user_id).first()
+    if not w:
+        w = WalletModel(
+            owner_type="USER",
+            owner_id=user_id,
+            available_balance=Decimal("0.00"),
+            currency="INR",
+            status="ACTIVE",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
+        )
+        db.add(w)
+        db.commit()
+        db.refresh(w)
+    return w
+
+# --- Admin Wallet Endpoints ---
+
+@app.get("/api/admin/wallet", tags=["Wallet Management"])
+def get_admin_wallet(
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    wallet = get_or_create_admin_wallet(db, current_admin.id)
+    
+    total_added = db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+        WalletTransactionModel.wallet_id == wallet.id,
+        WalletTransactionModel.transaction_type == "ADMIN_WALLET_CREDIT",
+        WalletTransactionModel.direction == "CREDIT"
+    ).scalar()
+
+    total_allocated = db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+        WalletTransactionModel.wallet_id == wallet.id,
+        WalletTransactionModel.transaction_type == "ADMIN_TO_USER_ALLOCATION",
+        WalletTransactionModel.direction == "DEBIT"
+    ).scalar()
+
+    total_spent_by_users = db.query(func.coalesce(func.sum(VoterAmountAllocationModel.amount), 0)).filter(
+        VoterAmountAllocationModel.status == "ACTIVE"
+    ).scalar()
+
+    total_refunds = db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+        WalletTransactionModel.transaction_type.in_(["TRANSACTION_REVERSAL", "REFUND"])
+    ).scalar()
+
+    recent_txs = db.query(WalletTransactionModel).filter(
+        WalletTransactionModel.wallet_id == wallet.id
+    ).order_by(desc(WalletTransactionModel.created_at)).limit(10).all()
+
+    return {
+        "wallet": wallet.to_dict(),
+        "available_balance": float(wallet.available_balance or 0.0),
+        "total_amount_added": float(total_added or 0.0),
+        "total_allocated_to_users": float(total_allocated or 0.0),
+        "total_spent_by_users": float(total_spent_by_users or 0.0),
+        "total_refunds": float(total_refunds or 0.0),
+        "recent_transactions": [tx.to_dict() for tx in recent_txs]
+    }
+
+@app.post("/api/admin/wallet/fund", tags=["Wallet Management"])
+def fund_admin_wallet(
+    req: FundAdminWalletRequest,
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    if req.amount <= 0:
+        raise HTTPException(status_code=400, detail="Funding amount must be greater than zero.")
+
+    get_or_create_admin_wallet(db, current_admin.id)
+    wallet = db.query(WalletModel).filter(
+        WalletModel.owner_type == "ADMIN",
+        WalletModel.owner_id == current_admin.id
+    ).with_for_update().first()
+
+    balance_before = wallet.available_balance
+    wallet.available_balance += Decimal(str(req.amount))
+    balance_after = wallet.available_balance
+    wallet.updated_at = datetime.now(timezone.utc)
+
+    tx_id = f"WTXN-FUND-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+    tx = WalletTransactionModel(
+        transaction_id=tx_id,
+        wallet_id=wallet.id,
+        transaction_type="ADMIN_WALLET_CREDIT",
+        direction="CREDIT",
+        amount=Decimal(str(req.amount)),
+        balance_before=balance_before,
+        balance_after=balance_after,
+        reference_type="FUNDING",
+        reference_id=req.transaction_reference or tx_id,
+        payment_method=req.payment_method,
+        remarks=req.remarks or f"Funded via {req.payment_method}. Source: {req.funding_source}, Status: {req.verification_status}",
+        created_by=current_admin.id,
+        created_at=req.transaction_date or datetime.now(timezone.utc)
+    )
+    db.add(tx)
+
+    db.add(AuditLogModel(
+        user_id=current_admin.id,
+        action="ADMIN_WALLET_FUNDED",
+        details=f"Admin added ₹{req.amount:,.2f} to wallet via {req.payment_method} (Ref: {req.transaction_reference or tx_id}). Balance: ₹{balance_after:,.2f}",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+    db.refresh(wallet)
+
+    return {
+        "status": "ok",
+        "message": f"Successfully added ₹{req.amount:,.2f} to Admin Wallet.",
+        "wallet": wallet.to_dict(),
+        "transaction": tx.to_dict()
+    }
+
+@app.get("/api/admin/wallet/transactions", tags=["Wallet Management"])
+def get_admin_wallet_transactions(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    direction: Optional[str] = None,
+    transaction_type: Optional[str] = None,
+    search: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    wallet = get_or_create_admin_wallet(db, current_admin.id)
+    q = db.query(WalletTransactionModel).filter(WalletTransactionModel.wallet_id == wallet.id)
+
+    if direction:
+        q = q.filter(WalletTransactionModel.direction == direction.upper())
+    if transaction_type:
+        q = q.filter(WalletTransactionModel.transaction_type == transaction_type)
+    if search:
+        term = f"%{search.strip()}%"
+        q = q.filter(or_(
+            WalletTransactionModel.transaction_id.ilike(term),
+            WalletTransactionModel.reference_id.ilike(term),
+            WalletTransactionModel.remarks.ilike(term)
+        ))
+    if from_date:
+        try:
+            fd = datetime.fromisoformat(from_date)
+            q = q.filter(WalletTransactionModel.created_at >= fd)
+        except Exception:
+            pass
+    if to_date:
+        try:
+            td = datetime.fromisoformat(to_date)
+            q = q.filter(WalletTransactionModel.created_at <= td)
+        except Exception:
+            pass
+
+    total = q.count()
+    items = q.order_by(desc(WalletTransactionModel.created_at)).offset((page - 1) * limit).limit(limit).all()
+    return {
+        "items": [tx.to_dict() for tx in items],
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+# --- User Wallet Allocation Endpoints (Admin -> User) ---
+
+@app.get("/api/admin/wallet/users", tags=["Wallet Management"])
+def list_user_wallets(
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    users = db.query(UserModel).order_by(UserModel.username).all()
+    res = []
+    for u in users:
+        w = db.query(WalletModel).filter(WalletModel.owner_type == "USER", WalletModel.owner_id == u.id).first()
+        assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == u.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        constituencies = sorted(list(set(a.constituency for a in assignments if a.constituency)))
+        wards_set = set()
+        for a in assignments:
+            for w_val in a.to_dict()["wards"]:
+                wards_set.add(str(w_val))
+        wards = sorted(list(wards_set))
+
+        total_allocated = 0.0
+        total_spent = 0.0
+        if w:
+            total_allocated = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+                WalletTransactionModel.wallet_id == w.id,
+                WalletTransactionModel.transaction_type == "USER_WALLET_CREDIT"
+            ).scalar() or 0.0)
+            total_spent = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+                WalletTransactionModel.wallet_id == w.id,
+                WalletTransactionModel.transaction_type == "VOTER_AMOUNT_DEBIT"
+            ).scalar() or 0.0)
+
+        res.append({
+            "user_id": u.id,
+            "username": u.username,
+            "full_name": u.full_name,
+            "email": u.email,
+            "role": u.role,
+            "is_active": u.is_active,
+            "assigned_constituency": ", ".join(constituencies) if constituencies else "None Assigned",
+            "assigned_wards": ", ".join(wards) if wards else "All / None",
+            "has_geographic_assignment": len(assignments) > 0,
+            "available_balance": float(w.available_balance if w else 0.0),
+            "total_allocated": total_allocated,
+            "total_spent": total_spent,
+            "status": "Active" if (w and w.status == "ACTIVE" and u.is_active) else "Inactive"
+        })
+    return res
+
+@app.post("/api/admin/wallet/allocate", tags=["Wallet Management"])
+def allocate_amount_to_user(
+    req: AllocateUserWalletRequest,
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    if req.amount <= 0:
+        raise HTTPException(status_code=400, detail="Allocation amount must be greater than zero.")
+
+    if req.idempotency_key:
+        existing_tx = db.query(WalletTransactionModel).filter(
+            WalletTransactionModel.idempotency_key == req.idempotency_key
+        ).first()
+        if existing_tx:
+            admin_wallet = get_or_create_admin_wallet(db, current_admin.id)
+            user_wallet = get_or_create_user_wallet(db, req.user_id)
+            return {
+                "status": "ok",
+                "message": "Allocation already processed (idempotency key matched).",
+                "admin_balance": float(admin_wallet.available_balance),
+                "user_balance": float(user_wallet.available_balance),
+                "transaction_id": existing_tx.transaction_id
+            }
+
+    target_user = db.query(UserModel).filter(UserModel.id == req.user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    if not target_user.is_active:
+        raise HTTPException(status_code=400, detail="Cannot allocate funds to an inactive user account.")
+
+    get_or_create_admin_wallet(db, current_admin.id)
+    get_or_create_user_wallet(db, target_user.id)
+
+    admin_wallet = db.query(WalletModel).filter(
+        WalletModel.owner_type == "ADMIN",
+        WalletModel.owner_id == current_admin.id
+    ).with_for_update().first()
+
+    user_wallet = db.query(WalletModel).filter(
+        WalletModel.owner_type == "USER",
+        WalletModel.owner_id == target_user.id
+    ).with_for_update().first()
+
+    alloc_amount = Decimal(str(req.amount))
+    if admin_wallet.available_balance < alloc_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient Admin Wallet balance. Available: ₹{admin_wallet.available_balance:,.2f}, Requested: ₹{req.amount:,.2f}."
+        )
+
+    admin_before = admin_wallet.available_balance
+    admin_wallet.available_balance -= alloc_amount
+    admin_after = admin_wallet.available_balance
+    admin_wallet.updated_at = datetime.now(timezone.utc)
+
+    user_before = user_wallet.available_balance
+    user_wallet.available_balance += alloc_amount
+    user_after = user_wallet.available_balance
+    user_wallet.updated_at = datetime.now(timezone.utc)
+
+    date_now = req.allocation_date or datetime.now(timezone.utc)
+    admin_tx_id = f"WTXN-ALOC-OUT-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+    user_tx_id = f"WTXN-ALOC-IN-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+
+    admin_tx = WalletTransactionModel(
+        transaction_id=admin_tx_id,
+        wallet_id=admin_wallet.id,
+        transaction_type="ADMIN_TO_USER_ALLOCATION",
+        direction="DEBIT",
+        amount=alloc_amount,
+        balance_before=admin_before,
+        balance_after=admin_after,
+        reference_type="USER_ALLOCATION",
+        reference_id=str(target_user.id),
+        remarks=req.remarks or f"Allocated ₹{req.amount:,.2f} to user @{target_user.username}",
+        idempotency_key=req.idempotency_key,
+        created_by=current_admin.id,
+        created_at=date_now
+    )
+    user_tx = WalletTransactionModel(
+        transaction_id=user_tx_id,
+        wallet_id=user_wallet.id,
+        transaction_type="USER_WALLET_CREDIT",
+        direction="CREDIT",
+        amount=alloc_amount,
+        balance_before=user_before,
+        balance_after=user_after,
+        reference_type="ADMIN_ALLOCATION",
+        reference_id=str(admin_wallet.id),
+        remarks=req.remarks or f"Received ₹{req.amount:,.2f} allocation from Admin",
+        idempotency_key=req.idempotency_key,
+        created_by=current_admin.id,
+        created_at=date_now
+    )
+    db.add(admin_tx)
+    db.add(user_tx)
+
+    db.add(AuditLogModel(
+        user_id=current_admin.id,
+        action="USER_WALLET_ALLOCATED",
+        details=f"Admin allocated ₹{req.amount:,.2f} to user @{target_user.username}. Admin balance: ₹{admin_after:,.2f}, User balance: ₹{user_after:,.2f}",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+
+    return {
+        "status": "ok",
+        "message": f"Successfully allocated ₹{req.amount:,.2f} to @{target_user.username}.",
+        "admin_balance": float(admin_after),
+        "user_balance": float(user_after),
+        "admin_transaction_id": admin_tx_id,
+        "user_transaction_id": user_tx_id
+    }
+
+@app.get("/api/admin/wallet/users/{user_id}/transactions", tags=["Wallet Management"])
+def get_user_wallet_transactions_admin(
+    user_id: int,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    wallet = get_or_create_user_wallet(db, user_id)
+    q = db.query(WalletTransactionModel).filter(WalletTransactionModel.wallet_id == wallet.id)
+    total = q.count()
+    items = q.order_by(desc(WalletTransactionModel.created_at)).offset((page - 1) * limit).limit(limit).all()
+    return {
+        "items": [tx.to_dict() for tx in items],
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+# --- Geographic Assignment Endpoints ---
+
+@app.get("/api/admin/user-assignments", tags=["Geographic Assignment"])
+def list_user_geographic_assignments(
+    user_id: Optional[int] = None,
+    constituency: Optional[str] = None,
+    status: Optional[str] = None,
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    q = db.query(UserGeographicAssignmentModel)
+    if user_id:
+        q = q.filter(UserGeographicAssignmentModel.user_id == user_id)
+    if constituency:
+        q = q.filter(UserGeographicAssignmentModel.constituency.ilike(f"%{constituency}%"))
+    if status:
+        q = q.filter(UserGeographicAssignmentModel.status == status.upper())
+    assignments = q.order_by(desc(UserGeographicAssignmentModel.created_at)).all()
+    return [a.to_dict() for a in assignments]
+
+@app.post("/api/admin/user-assignments", tags=["Geographic Assignment"])
+def create_user_geographic_assignment(
+    req: CreateGeographicAssignmentRequest,
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    import json
+    u = db.query(UserModel).filter(UserModel.id == req.user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    wards_json = json.dumps(req.wards)
+    assignment = UserGeographicAssignmentModel(
+        user_id=req.user_id,
+        district=req.district.strip(),
+        constituency=req.constituency.strip(),
+        wards=wards_json,
+        area=req.area.strip() if req.area else None,
+        start_date=req.start_date,
+        end_date=req.end_date,
+        status=req.status.upper(),
+        assigned_by=current_admin.id,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc)
+    )
+    db.add(assignment)
+    db.add(AuditLogModel(
+        user_id=current_admin.id,
+        action="GEO_ASSIGNMENT_CREATED",
+        details=f"Assigned user @{u.username} to Constituency '{req.constituency}', Wards: {', '.join(req.wards) if req.wards else 'All'}",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+    db.refresh(assignment)
+    return assignment.to_dict()
+
+@app.put("/api/admin/user-assignments/{assignment_id}", tags=["Geographic Assignment"])
+def update_user_geographic_assignment(
+    assignment_id: int,
+    req: UpdateGeographicAssignmentRequest,
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    import json
+    a = db.query(UserGeographicAssignmentModel).filter(UserGeographicAssignmentModel.id == assignment_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Geographic assignment not found.")
+
+    if req.district is not None:
+        a.district = req.district.strip()
+    if req.constituency is not None:
+        a.constituency = req.constituency.strip()
+    if req.wards is not None:
+        a.wards = json.dumps(req.wards)
+    if req.area is not None:
+        a.area = req.area.strip() if req.area else None
+    if req.start_date is not None:
+        a.start_date = req.start_date
+    if req.end_date is not None:
+        a.end_date = req.end_date
+    if req.status is not None:
+        a.status = req.status.upper()
+
+    a.updated_at = datetime.now(timezone.utc)
+    db.add(AuditLogModel(
+        user_id=current_admin.id,
+        action="GEO_ASSIGNMENT_UPDATED",
+        details=f"Updated geographic assignment #{a.id} for user #{a.user_id}",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+    db.refresh(a)
+    return a.to_dict()
+
+@app.delete("/api/admin/user-assignments/{assignment_id}", tags=["Geographic Assignment"])
+def delete_user_geographic_assignment(
+    assignment_id: int,
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    a = db.query(UserGeographicAssignmentModel).filter(UserGeographicAssignmentModel.id == assignment_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Geographic assignment not found.")
+
+    user_name = a.user.username if a.user else str(a.user_id)
+    db.delete(a)
+    db.add(AuditLogModel(
+        user_id=current_admin.id,
+        action="GEO_ASSIGNMENT_REVOKED",
+        details=f"Revoked geographic assignment #{assignment_id} for user @{user_name}",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+    return {"status": "ok", "message": "Assignment revoked successfully."}
+
+@app.get("/api/admin/locations", tags=["Geographic Assignment"])
+def get_available_locations(
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Return distinct districts, constituencies, and wards present in documents."""
+    districts = [r[0] for r in db.query(DocumentModel.district).filter(DocumentModel.district.isnot(None), DocumentModel.district != "").distinct().all()]
+    constituencies = [r[0] for r in db.query(DocumentModel.constituency).filter(DocumentModel.constituency.isnot(None), DocumentModel.constituency != "").distinct().all()]
+    wards = [r[0] for r in db.query(DocumentModel.ward_number).filter(DocumentModel.ward_number.isnot(None), DocumentModel.ward_number != "").distinct().all()]
+    return {
+        "districts": sorted(districts),
+        "constituencies": sorted(constituencies),
+        "wards": sorted(wards)
+    }
+
+# --- User Wallet Endpoints (Current User) ---
+
+def normalize_ward_value(val: Optional[str]) -> str:
+    if not val:
+        return ""
+    val_clean = str(val).strip().lower()
+    return re.sub(r'[^0-9a-zA-Z]', '', val_clean)
+
+@app.get("/api/user/wallet", tags=["User Wallet"])
+def get_current_user_wallet(
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    is_admin = current_user.role.lower() == "admin"
+    if is_admin:
+        wallet = get_or_create_admin_wallet(db, current_user.id)
+        total_allocated = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+            WalletTransactionModel.wallet_id == wallet.id,
+            WalletTransactionModel.transaction_type == "ADMIN_WALLET_CREDIT",
+            WalletTransactionModel.direction == "CREDIT"
+        ).scalar() or 0.0)
+    else:
+        wallet = get_or_create_user_wallet(db, current_user.id)
+        total_allocated = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+            WalletTransactionModel.wallet_id == wallet.id,
+            WalletTransactionModel.transaction_type == "USER_WALLET_CREDIT",
+            WalletTransactionModel.direction == "CREDIT"
+        ).scalar() or 0.0)
+
+    total_spent = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+        WalletTransactionModel.wallet_id == wallet.id,
+        WalletTransactionModel.transaction_type == "VOTER_AMOUNT_DEBIT"
+    ).scalar() or 0.0)
+
+    total_refunded = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+        WalletTransactionModel.wallet_id == wallet.id,
+        WalletTransactionModel.transaction_type == "TRANSACTION_REVERSAL"
+    ).scalar() or 0.0)
+
+    recent_txs = db.query(WalletTransactionModel).filter(
+        WalletTransactionModel.wallet_id == wallet.id
+    ).order_by(desc(WalletTransactionModel.created_at)).limit(10).all()
+
+    assignments = []
+    if not is_admin:
+        assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+
+    return {
+        "wallet": wallet.to_dict(),
+        "available_balance": float(wallet.available_balance or 0.0),
+        "total_amount_allocated": total_allocated,
+        "total_amount_spent": total_spent,
+        "total_amount_refunded": total_refunded,
+        "recent_transactions": [tx.to_dict() for tx in recent_txs],
+        "geographic_assignments": [a.to_dict() for a in assignments],
+        "is_admin": is_admin
+    }
+
+@app.get("/api/user/wallet/transactions", tags=["User Wallet"])
+def get_current_user_wallet_transactions(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    direction: Optional[str] = None,
+    transaction_type: Optional[str] = None,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role.lower() == "admin":
+        wallet = get_or_create_admin_wallet(db, current_user.id)
+    else:
+        wallet = get_or_create_user_wallet(db, current_user.id)
+
+    q = db.query(WalletTransactionModel).filter(WalletTransactionModel.wallet_id == wallet.id)
+    if direction:
+        q = q.filter(WalletTransactionModel.direction == direction.upper())
+    if transaction_type:
+        q = q.filter(WalletTransactionModel.transaction_type == transaction_type)
+    total = q.count()
+    items = q.order_by(desc(WalletTransactionModel.created_at)).offset((page - 1) * limit).limit(limit).all()
+    return {
+        "items": [tx.to_dict() for tx in items],
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+# --- Restricted Voter Access & Amount Assignment Endpoints ---
+
+@app.get("/api/user/assigned-voters", tags=["Voter Allocation"])
+def get_user_assigned_voters(
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100),
+    search: Optional[str] = None,
+    district: Optional[str] = None,
+    constituency: Optional[str] = None,
+    ward: Optional[str] = None,
+    gender: Optional[str] = None,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    q = db.query(VoterRecordModel).outerjoin(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+
+    # Geographic Access Enforcement
+    if current_user.role.lower() != "admin":
+        assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not assignments:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "limit": limit,
+                "message": "No active geographic assignment found. Please contact Administrator to assign Constituency and Wards."
+            }
+
+        permitted_constituencies = [a.constituency.strip().lower() for a in assignments if a.constituency]
+        permitted_wards_norm = []
+        for a in assignments:
+            for w in a.to_dict()["wards"]:
+                if w:
+                    w_n = normalize_ward_value(w)
+                    if w_n:
+                        permitted_wards_norm.append(w_n)
+
+        q = q.filter(func.lower(DocumentModel.constituency).in_(permitted_constituencies))
+        if permitted_wards_norm:
+            ward_clauses = []
+            for pw in permitted_wards_norm:
+                ward_clauses.append(DocumentModel.ward_number.ilike(f"%{pw}%"))
+            q = q.filter(or_(*ward_clauses))
+
+        if ward:
+            q = q.filter(DocumentModel.ward_number.ilike(f"%{ward.strip()}%"))
+    else:
+        if district:
+            q = q.filter(DocumentModel.district.ilike(f"%{district.strip()}%"))
+        if constituency:
+            q = q.filter(DocumentModel.constituency.ilike(f"%{constituency.strip()}%"))
+        if ward:
+            q = q.filter(DocumentModel.ward_number.ilike(f"%{ward.strip()}%"))
+
+    if search:
+        term = f"%{search.strip()}%"
+        q = q.filter(or_(
+            VoterRecordModel.voter_name.ilike(term),
+            VoterRecordModel.voter_id.ilike(term),
+            VoterRecordModel.house_no.ilike(term)
+        ))
+    if gender:
+        q = q.filter(VoterRecordModel.gender.ilike(gender))
+
+    total = q.count()
+    voters = q.order_by(VoterRecordModel.id).offset((page - 1) * limit).limit(limit).all()
+
+    return {
+        "items": [v.to_dict() for v in voters],
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+@app.get("/api/user/assigned-voters/{voter_id}", tags=["Voter Allocation"])
+def get_user_assigned_voter_details(
+    voter_id: int,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == voter_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter not found.")
+
+    if current_user.role.lower() != "admin":
+        assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not assignments:
+            raise HTTPException(status_code=403, detail="Access denied: No active geographic assignment.")
+
+        permitted_constituencies = [a.constituency.strip().lower() for a in assignments if a.constituency]
+        permitted_wards_norm = []
+        for a in assignments:
+            for w in a.to_dict()["wards"]:
+                if w:
+                    w_n = normalize_ward_value(w)
+                    if w_n:
+                        permitted_wards_norm.append(w_n)
+
+        v_const = (voter.document.constituency or "").strip().lower() if voter.document else ""
+        v_ward_norm = normalize_ward_value(voter.document.ward_number if voter.document else "")
+
+        if v_const not in permitted_constituencies:
+            raise HTTPException(status_code=403, detail="Access denied: Voter is outside your assigned constituency.")
+        if permitted_wards_norm and v_ward_norm not in permitted_wards_norm:
+            raise HTTPException(status_code=403, detail="Access denied: Voter is outside your assigned wards.")
+
+    return voter.to_dict()
+
+@app.post("/api/user/voter-allocations", tags=["Voter Allocation"])
+def assign_voter_amount(
+    req: AssignVoterAmountRequest,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if req.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero.")
+
+    is_admin = current_user.role.lower() == "admin"
+
+    # Idempotency check
+    if req.idempotency_key:
+        existing = db.query(VoterAmountAllocationModel).filter(
+            VoterAmountAllocationModel.allocation_reference == req.idempotency_key
+        ).first()
+        if existing:
+            active_wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
+            return {
+                "status": "ok",
+                "message": "Allocation already processed.",
+                "allocation": existing.to_dict(),
+                "updated_balance": float(active_wallet.available_balance)
+            }
+
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == req.voter_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter not found.")
+
+    # Geographic Scope Verification for non-admin
+    if not is_admin:
+        assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not assignments:
+            raise HTTPException(status_code=403, detail="No active geographic assignment for your account.")
+
+        permitted_constituencies = [a.constituency.strip().lower() for a in assignments if a.constituency]
+        permitted_wards_norm = []
+        for a in assignments:
+            for w in a.to_dict()["wards"]:
+                if w:
+                    w_n = normalize_ward_value(w)
+                    if w_n:
+                        permitted_wards_norm.append(w_n)
+
+        v_const = (voter.document.constituency or "").strip().lower() if voter.document else ""
+        v_ward_norm = normalize_ward_value(voter.document.ward_number if voter.document else "")
+
+        if v_const not in permitted_constituencies:
+            raise HTTPException(status_code=403, detail="Voter is outside your assigned constituency.")
+        if permitted_wards_norm and v_ward_norm not in permitted_wards_norm:
+            raise HTTPException(status_code=403, detail="Voter is outside your assigned wards.")
+
+    # Atomic Wallet Lock: Support Admin master treasury as well as User wallets
+    assign_amount = Decimal(str(req.amount))
+    wallet = None
+
+    if is_admin:
+        get_or_create_admin_wallet(db, current_user.id)
+        admin_w = db.query(WalletModel).filter(
+            WalletModel.owner_type == "ADMIN",
+            WalletModel.owner_id == current_user.id
+        ).with_for_update().first()
+
+        user_w = db.query(WalletModel).filter(
+            WalletModel.owner_type == "USER",
+            WalletModel.owner_id == current_user.id
+        ).with_for_update().first()
+
+        if admin_w and admin_w.available_balance >= assign_amount:
+            wallet = admin_w
+        elif user_w and user_w.available_balance >= assign_amount:
+            wallet = user_w
+        else:
+            avail = admin_w.available_balance if admin_w else (user_w.available_balance if user_w else Decimal("0.00"))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient wallet balance. Available: ₹{avail:,.2f}, Requested: ₹{req.amount:,.2f}."
+            )
+    else:
+        get_or_create_user_wallet(db, current_user.id)
+        wallet = db.query(WalletModel).filter(
+            WalletModel.owner_type == "USER",
+            WalletModel.owner_id == current_user.id
+        ).with_for_update().first()
+
+        if not wallet or wallet.available_balance < assign_amount:
+            avail = wallet.available_balance if wallet else Decimal("0.00")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient wallet balance. Available: ₹{avail:,.2f}, Requested: ₹{req.amount:,.2f}."
+            )
+
+    before_bal = wallet.available_balance
+    wallet.available_balance -= assign_amount
+    after_bal = wallet.available_balance
+    wallet.updated_at = datetime.now(timezone.utc)
+
+    val_ref = req.idempotency_key or f"VAL-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+    tx_id = f"WTXN-VOTER-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+
+    tx = WalletTransactionModel(
+        transaction_id=tx_id,
+        wallet_id=wallet.id,
+        transaction_type="VOTER_AMOUNT_DEBIT",
+        direction="DEBIT",
+        amount=assign_amount,
+        balance_before=before_bal,
+        balance_after=after_bal,
+        reference_type="VOTER_ALLOCATION",
+        reference_id=str(voter.id),
+        idempotency_key=req.idempotency_key,
+        remarks=req.remarks or f"Assigned ₹{req.amount:,.2f} to voter {voter.voter_name} (EPIC: {voter.voter_id})",
+        created_by=current_user.id,
+        created_at=req.assignment_date or datetime.now(timezone.utc)
+    )
+    db.add(tx)
+    db.flush()
+
+    alloc = VoterAmountAllocationModel(
+        allocation_reference=val_ref,
+        voter_id=voter.id,
+        user_id=current_user.id,
+        wallet_transaction_id=tx.id,
+        amount=assign_amount,
+        allocation_date=req.assignment_date or datetime.now(timezone.utc),
+        status="ACTIVE",
+        remarks=req.remarks,
+        created_by=current_user.id,
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(alloc)
+
+    db.add(AuditLogModel(
+        user_id=current_user.id,
+        action="VOTER_AMOUNT_ASSIGNED",
+        details=f"User @{current_user.username} ({wallet.owner_type} wallet) assigned ₹{req.amount:,.2f} to voter {voter.voter_name} ({voter.voter_id}). Balance: ₹{after_bal:,.2f}",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+    db.refresh(alloc)
+
+    return {
+        "status": "ok",
+        "message": f"Successfully assigned ₹{req.amount:,.2f} to voter {voter.voter_name}.",
+        "allocation": alloc.to_dict(),
+        "updated_balance": float(after_bal),
+        "transaction_id": tx_id
+    }
+
+@app.get("/api/user/voter-allocations", tags=["Voter Allocation"])
+def list_user_voter_allocations(
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100),
+    search: Optional[str] = None,
+    ward: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    q = db.query(VoterAmountAllocationModel).join(VoterRecordModel, VoterAmountAllocationModel.voter_id == VoterRecordModel.id)
+    if current_user.role.lower() != "admin":
+        q = q.filter(VoterAmountAllocationModel.user_id == current_user.id)
+
+    if search:
+        term = f"%{search.strip()}%"
+        q = q.filter(or_(
+            VoterAmountAllocationModel.allocation_reference.ilike(term),
+            VoterRecordModel.voter_name.ilike(term),
+            VoterRecordModel.voter_id.ilike(term)
+        ))
+
+    if ward:
+        q = q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id).filter(
+            DocumentModel.ward_number.ilike(f"%{ward}%")
+        )
+
+    if from_date:
+        try:
+            fd = datetime.fromisoformat(from_date)
+            q = q.filter(VoterAmountAllocationModel.allocation_date >= fd)
+        except Exception:
+            pass
+
+    if to_date:
+        try:
+            td = datetime.fromisoformat(to_date)
+            q = q.filter(VoterAmountAllocationModel.allocation_date <= td)
+        except Exception:
+            pass
+
+    total = q.count()
+    items = q.order_by(desc(VoterAmountAllocationModel.allocation_date)).offset((page - 1) * limit).limit(limit).all()
+    return {
+        "items": [a.to_dict() for a in items],
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+@app.get("/api/user/voter-allocations/{allocation_id}", tags=["Voter Allocation"])
+def get_voter_allocation_details(
+    allocation_id: int,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    alloc = db.query(VoterAmountAllocationModel).filter(VoterAmountAllocationModel.id == allocation_id).first()
+    if not alloc:
+        raise HTTPException(status_code=404, detail="Allocation record not found.")
+    if current_user.role.lower() != "admin" and alloc.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied: You do not own this allocation record.")
+    return alloc.to_dict()
+
+@app.post("/api/user/voter-allocations/{allocation_id}/reverse", tags=["Voter Allocation"])
+def reverse_voter_allocation(
+    allocation_id: int,
+    req: ReverseAllocationRequest,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    alloc = db.query(VoterAmountAllocationModel).filter(VoterAmountAllocationModel.id == allocation_id).first()
+    if not alloc:
+        raise HTTPException(status_code=404, detail="Allocation record not found.")
+
+    if current_user.role.lower() != "admin" and alloc.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied to reverse this allocation.")
+
+    if alloc.status == "REVERSED":
+        raise HTTPException(status_code=400, detail="This allocation has already been reversed.")
+
+    # Find the wallet that was debited from the original transaction
+    orig_tx = db.query(WalletTransactionModel).filter(
+        WalletTransactionModel.id == alloc.wallet_transaction_id
+    ).first()
+
+    wallet = None
+    if orig_tx and orig_tx.wallet_id:
+        wallet = db.query(WalletModel).filter(WalletModel.id == orig_tx.wallet_id).with_for_update().first()
+
+    if not wallet:
+        # Fallback to user's wallet
+        alloc_user = db.query(UserModel).filter(UserModel.id == alloc.user_id).first()
+        is_alloc_admin = alloc_user and alloc_user.role.lower() == "admin"
+        if is_alloc_admin:
+            wallet = db.query(WalletModel).filter(
+                WalletModel.owner_type == "ADMIN",
+                WalletModel.owner_id == alloc.user_id
+            ).with_for_update().first()
+        else:
+            wallet = db.query(WalletModel).filter(
+                WalletModel.owner_type == "USER",
+                WalletModel.owner_id == alloc.user_id
+            ).with_for_update().first()
+
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Associated wallet not found for restoration.")
+
+    before_bal = wallet.available_balance
+    wallet.available_balance += alloc.amount
+    after_bal = wallet.available_balance
+    wallet.updated_at = datetime.now(timezone.utc)
+
+    rev_tx_id = f"WTXN-REV-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+    rev_tx = WalletTransactionModel(
+        transaction_id=rev_tx_id,
+        wallet_id=wallet.id,
+        transaction_type="TRANSACTION_REVERSAL",
+        direction="CREDIT",
+        amount=alloc.amount,
+        balance_before=before_bal,
+        balance_after=after_bal,
+        reference_type="REVERSAL",
+        reference_id=alloc.allocation_reference,
+        remarks=f"Reversal of {alloc.allocation_reference}: {req.reason.strip()}",
+        created_by=current_user.id,
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(rev_tx)
+
+    alloc.status = "REVERSED"
+    alloc.reversal_reason = req.reason.strip()
+    alloc.reversed_at = datetime.now(timezone.utc)
+    alloc.reversed_by = current_user.id
+
+    db.add(AuditLogModel(
+        user_id=current_user.id,
+        action="VOTER_ALLOCATION_REVERSED",
+        details=f"Reversed allocation {alloc.allocation_reference} (₹{alloc.amount:,.2f}) for voter ID {alloc.voter_id}. Reason: {req.reason.strip()}. Wallet balance restored to ₹{after_bal:,.2f}",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+
+    return {
+        "status": "ok",
+        "message": "Allocation reversed successfully and wallet balance restored.",
+        "updated_balance": float(after_bal),
+        "transaction_id": rev_tx_id
+    }
+
+# --- Admin Reports & Global Summaries ---
+
+@app.get("/api/admin/voter-allocations", tags=["Admin Reports"])
+def admin_list_all_voter_allocations(
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100),
+    user_id: Optional[int] = None,
+    constituency: Optional[str] = None,
+    ward: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    q = db.query(VoterAmountAllocationModel).join(VoterRecordModel, VoterAmountAllocationModel.voter_id == VoterRecordModel.id)
+    if user_id:
+        q = q.filter(VoterAmountAllocationModel.user_id == user_id)
+    if status:
+        q = q.filter(VoterAmountAllocationModel.status == status.upper())
+    if constituency or ward:
+        q = q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+        if constituency:
+            q = q.filter(DocumentModel.constituency.ilike(f"%{constituency}%"))
+        if ward:
+            q = q.filter(DocumentModel.ward_number.ilike(f"%{ward}%"))
+
+    if search:
+        term = f"%{search.strip()}%"
+        q = q.filter(or_(
+            VoterAmountAllocationModel.allocation_reference.ilike(term),
+            VoterRecordModel.voter_name.ilike(term),
+            VoterRecordModel.voter_id.ilike(term)
+        ))
+
+    total = q.count()
+    items = q.order_by(desc(VoterAmountAllocationModel.allocation_date)).offset((page - 1) * limit).limit(limit).all()
+    return {
+        "items": [a.to_dict() for a in items],
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+@app.get("/api/admin/wallet/summary", tags=["Admin Reports"])
+def get_admin_wallet_global_summary(
+    current_admin: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    admin_wallet = get_or_create_admin_wallet(db, current_admin.id)
+    
+    total_funded = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+        WalletTransactionModel.wallet_id == admin_wallet.id,
+        WalletTransactionModel.transaction_type == "ADMIN_WALLET_CREDIT"
+    ).scalar() or 0.0)
+
+    total_allocated_to_users = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+        WalletTransactionModel.wallet_id == admin_wallet.id,
+        WalletTransactionModel.transaction_type == "ADMIN_TO_USER_ALLOCATION"
+    ).scalar() or 0.0)
+
+    total_user_wallets_balance = float(db.query(func.coalesce(func.sum(WalletModel.available_balance), 0)).filter(
+        WalletModel.owner_type == "USER"
+    ).scalar() or 0.0)
+
+    total_spent_on_voters = float(db.query(func.coalesce(func.sum(VoterAmountAllocationModel.amount), 0)).filter(
+        VoterAmountAllocationModel.status == "ACTIVE"
+    ).scalar() or 0.0)
+
+    total_refunds = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
+        WalletTransactionModel.transaction_type.in_(["TRANSACTION_REVERSAL", "REFUND"])
+    ).scalar() or 0.0)
+
+    active_user_wallets_count = db.query(WalletModel).filter(
+        WalletModel.owner_type == "USER",
+        WalletModel.status == "ACTIVE"
+    ).count()
+
+    total_allocations_count = db.query(VoterAmountAllocationModel).filter(
+        VoterAmountAllocationModel.status == "ACTIVE"
+    ).count()
+
+    return {
+        "admin_available_balance": float(admin_wallet.available_balance),
+        "total_amount_funded": total_funded,
+        "total_allocated_to_users": total_allocated_to_users,
+        "total_user_wallets_balance": total_user_wallets_balance,
+        "total_spent_on_voters": total_spent_on_voters,
+        "total_refunds": total_refunds,
+        "active_user_wallets_count": active_user_wallets_count,
+        "total_allocations_count": total_allocations_count
+    }

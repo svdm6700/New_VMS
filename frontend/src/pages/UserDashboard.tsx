@@ -8,10 +8,13 @@ import {
   FileSpreadsheet,
   Download,
   User,
-  Clock
+  Clock,
+  Wallet,
+  MapPin
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { documentService } from '../services/documentService';
+import { walletService } from '../services/walletService';
 import { DocumentItem } from '../types/document';
 import { formatBytes } from '../utils/formatters';
 
@@ -19,15 +22,20 @@ export const UserDashboard: React.FC = () => {
   const { user } = useAuth();
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [totalRecords, setTotalRecords] = useState<number>(0);
+  const [walletBalance, setWalletBalance] = useState<number>(0);
+  const [walletAllocated, setWalletAllocated] = useState<number>(0);
+  const [walletSpent, setWalletSpent] = useState<number>(0);
+  const [assignedScope, setAssignedScope] = useState<string>('None');
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
     const fetchUserData = async () => {
       setLoading(true);
       try {
-        const [docsRes, recordsRes] = await Promise.allSettled([
+        const [docsRes, recordsRes, walletRes] = await Promise.allSettled([
           documentService.getDocuments({ limit: 10 }),
           documentService.getVoterRecords({ limit: 1 }),
+          walletService.getMyWallet(),
         ]);
 
         if (docsRes.status === 'fulfilled') {
@@ -36,6 +44,17 @@ export const UserDashboard: React.FC = () => {
 
         if (recordsRes.status === 'fulfilled') {
           setTotalRecords(recordsRes.value.total || 0);
+        }
+
+        if (walletRes.status === 'fulfilled') {
+          const w = walletRes.value;
+          setWalletBalance(w.available_balance || 0);
+          setWalletAllocated(w.total_amount_allocated || 0);
+          setWalletSpent(w.total_amount_spent || 0);
+          if (w.geographic_assignments && w.geographic_assignments.length > 0) {
+            const first = w.geographic_assignments[0];
+            setAssignedScope(`${first.constituency} (${first.wards?.length ? 'Wards ' + first.wards.join(', ') : 'All Wards'})`);
+          }
         }
       } catch (err) {
         console.error('Failed to load user dashboard data:', err);
@@ -119,6 +138,54 @@ export const UserDashboard: React.FC = () => {
           </div>
           <div className="w-12 h-12 bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 rounded-2xl flex items-center justify-center">
             <Upload className="w-6 h-6" />
+          </div>
+        </div>
+      </div>
+
+      {/* Wallet Section (Section 3) */}
+      <div className="bg-gradient-to-br from-emerald-500/10 via-teal-500/5 to-transparent border border-emerald-500/20 rounded-3xl p-6 sm:p-7 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
+              <Wallet className="w-6 h-6" />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                My Active Wallet & Scope
+              </span>
+              <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-slate-50 font-mono">
+                ₹{walletBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Assigned: <strong className="text-slate-700 dark:text-slate-300">{assignedScope}</strong>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="hidden lg:flex items-center gap-6 px-4 py-2 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-emerald-500/15 text-xs text-slate-600 dark:text-slate-300">
+              <div>
+                <span className="text-[10px] text-slate-400 uppercase font-semibold block">Total Received</span>
+                <span className="font-mono font-bold text-slate-900 dark:text-slate-100">
+                  ₹{walletAllocated.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+              <div className="w-px h-7 bg-slate-200 dark:bg-slate-700" />
+              <div>
+                <span className="text-[10px] text-slate-400 uppercase font-semibold block">Total Disbursed</span>
+                <span className="font-mono font-bold text-slate-900 dark:text-slate-100">
+                  ₹{walletSpent.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+            </div>
+
+            <Link
+              to="/my-wallet"
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all"
+            >
+              <span>Open Wallet & Disburse</span>
+              <ArrowRight className="w-4 h-4" />
+            </Link>
           </div>
         </div>
       </div>

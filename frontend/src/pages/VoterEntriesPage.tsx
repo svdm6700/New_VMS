@@ -638,6 +638,14 @@ export const VoterEntriesPage: React.FC = () => {
                   <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200/50">
                     Active Verified
                   </span>
+                  <Link
+                    to={`/my-wallet?voter_id=${selectedVoter.id}`}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-bold shadow-xs transition-all"
+                    title="Disburse funds from your wallet to this voter"
+                  >
+                    <IndianRupee className="w-3.5 h-3.5" />
+                    <span>Spend from Wallet</span>
+                  </Link>
                   <button
                     type="button"
                     onClick={handleOpenQuickPayment}

@@ -7,6 +7,8 @@ import {
   TableProperties,
   CreditCard,
   Receipt,
+  Wallet,
+  DollarSign,
   Settings,
   Languages,
   X,
@@ -206,6 +208,56 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
             <Receipt className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
             <span>Payments Dashboard</span>
           </NavLink>
+
+          {/* Wallet Management (Admin: Master Wallets + Voter Disbursal, User: My Wallet) */}
+          {isAdmin ? (
+            <>
+              <NavLink
+                to="/admin/wallets"
+                onClick={() => onClose()}
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
+                    isActive
+                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-semibold shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
+                  }`
+                }
+              >
+                <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Admin Wallet Hub</span>
+              </NavLink>
+
+              <NavLink
+                to="/my-wallet"
+                onClick={() => onClose()}
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
+                    isActive
+                      ? 'bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 font-semibold shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
+                  }`
+                }
+              >
+                <DollarSign className="w-4 h-4 shrink-0 text-teal-600 dark:text-teal-400" />
+                <span>Spend on Voter</span>
+              </NavLink>
+            </>
+          ) : (
+            <NavLink
+              to="/my-wallet"
+              onClick={() => onClose()}
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
+                  isActive
+                    ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-semibold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
+                }`
+              }
+            >
+              <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              <span>My Wallet & Spend on Voter</span>
+            </NavLink>
+          )}
 
           <NavLink
             to="/settings"

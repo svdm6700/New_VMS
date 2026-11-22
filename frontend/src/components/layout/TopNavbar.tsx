@@ -20,6 +20,9 @@ const pageTitles: Record<string, string> = {
   '/extracted-data': 'Voter Records',
   '/voter-entries': 'Voter Details & Entry Management',
   '/payments': 'Payments Dashboard',
+  '/admin/wallets': 'Admin Wallet & Allocations',
+  '/wallets': 'Admin Wallet & Allocations',
+  '/my-wallet': 'My Wallet & Voter Allocations',
   '/settings': 'Application Settings',
 };
 
