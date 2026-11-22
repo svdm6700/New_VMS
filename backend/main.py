@@ -328,7 +328,7 @@ def run_background_extraction(
         with open(file_path, "rb") as f:
             data = f.read()
 
-        result = process_pdf(data, filename, ollama_url, model_name, use_ai)
+        result = process_pdf(data, filename, ollama_url, model_name, use_ai, doc_id=doc_id)
         result["id"] = doc_id
 
         res_path = RESULTS_DIR / f"{doc_id}.json"
@@ -350,7 +350,7 @@ def run_background_extraction(
             existing_epics = {}
             for r in records_list:
                 f_dict = {f.get("field_name", "").strip(): str(f.get("value", "")).strip() for f in r.get("fields", [])}
-                vid = f_dict.get("ఓటరు ఐడి కార్డు నెం.") or f_dict.get("గుర్తింపు కార్డు నెం.")
+                vid = f_dict.get("ఓటరు ఐడి కార్డు నెం.") or f_dict.get("గుర్తింపు కార్డు నెం.") or r.get("voter_id")
                 if vid and vid != "Not Available":
                     existing_epics[vid] = None
 
@@ -371,27 +371,34 @@ def run_background_extraction(
             for r in records_list:
                 fields = {f.get("field_name", "").strip(): str(f.get("value", "")).strip() for f in r.get("fields", [])}
 
-                sno = fields.get("గ్రా.పం.ఓ.జా.వ.సం.") or fields.get("వరుస సంఖ్య") or str(r.get("record_id", ""))
-                roll = fields.get("అ.ఓ.జా.వ.సం.") or "Not Available"
-                name = fields.get("ఓటరు పేరు") or fields.get("పేరు") or "Not Available"
+                sno = r.get("serial_no") or fields.get("గ్రా.పం.ఓ.జా.వ.సం.") or fields.get("వరుస సంఖ్య") or str(r.get("record_id", ""))
+                roll = r.get("electoral_roll_no") or fields.get("అ.ఓ.జా.వ.సం.") or "Not Available"
+                name = r.get("voter_name") or fields.get("ఓటరు పేరు") or fields.get("పేరు") or "Not Available"
 
-                rel_type = "Not Available"
-                rel_name = "Not Available"
-                if "తండ్రి పేరు" in fields:
-                    rel_type = "తండ్రి"
-                    rel_name = fields["తండ్రి పేరు"]
-                elif "భర్త పేరు" in fields:
-                    rel_type = "భర్త"
-                    rel_name = fields["భర్త పేరు"]
-                elif "సంబంధం" in fields or "సంబంధిత వ్యక్తి పేరు" in fields:
-                    rel_type = fields.get("సంబంధం", "Not Available")
-                    rel_name = fields.get("సంబంధిత వ్యక్తి పేరు", "Not Available")
+                rel_type = r.get("relation_type") or "Not Available"
+                rel_name = r.get("relation_name") or "Not Available"
+                if rel_type == "Not Available" or not rel_type:
+                    if "తండ్రి పేరు" in fields:
+                        rel_type = "తండ్రి"
+                        rel_name = fields["తండ్రి పేరు"]
+                    elif "భర్త పేరు" in fields:
+                        rel_type = "భర్త"
+                        rel_name = fields["భర్త పేరు"]
+                    elif "సంబంధం" in fields or "సంబంధిత వ్యక్తి పేరు" in fields:
+                        rel_type = fields.get("సంబంధం", "Not Available")
+                        rel_name = fields.get("సంబంధిత వ్యక్తి పేరు", "Not Available")
 
-                age = fields.get("వయస్సు", "Not Available")
-                gender = fields.get("లింగము", "Not Available")
-                house = fields.get("ఇంటి సంఖ్య", "Not Available")
-                voter_id = fields.get("ఓటరు ఐడి కార్డు నెం.") or fields.get("గుర్తింపు కార్డు నెం.") or "Not Available"
+                age = r.get("age") or fields.get("వయస్సు", "Not Available")
+                gender = r.get("gender") or fields.get("లింగము", "Not Available")
+                house = r.get("house_no") or fields.get("ఇంటి సంఖ్య", "Not Available")
+                voter_id = r.get("voter_id") or fields.get("ఓటరు ఐడి కార్డు నెం.") or fields.get("గుర్తింపు కార్డు నెం.") or "Not Available"
                 source_page = r.get("page", 1)
+
+                # Spatial image attributes
+                block_bbox = r.get("block_bbox")
+                photo_bbox = r.get("photo_bbox")
+                photo_path = r.get("photo_path")
+                image_matching_status = r.get("image_matching_status", "MISSING")
 
                 # Determine permanent unique key: reuse if confirmed duplicate, else use fresh key
                 assigned_key = None
@@ -400,6 +407,15 @@ def run_background_extraction(
                 else:
                     assigned_key = fresh_keys[fresh_key_idx]
                     fresh_key_idx += 1
+
+                # If photo is extracted and assigned_key is available, link unique_key photo
+                if assigned_key and photo_path and os.path.exists(photo_path):
+                    try:
+                        ukey_photo = PHOTOS_DIR / f"{assigned_key}.jpg"
+                        if not ukey_photo.exists():
+                            shutil.copyfile(photo_path, ukey_photo)
+                    except Exception:
+                        pass
 
                 voter_objs.append(VoterRecordModel(
                     document_id=doc_id,
@@ -414,6 +430,10 @@ def run_background_extraction(
                     voter_id=voter_id or "Not Available",
                     unique_key=assigned_key,
                     source_page=source_page,
+                    block_bbox=block_bbox,
+                    photo_bbox=photo_bbox,
+                    photo_path=photo_path,
+                    image_matching_status=image_matching_status,
                     ocr_confidence=None,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
@@ -1633,6 +1653,9 @@ def get_document_records(
     if source_page:
         q = q.filter(VoterRecordModel.source_page == source_page)
 
+    if image_matching_status and image_matching_status != "all":
+        q = q.filter(VoterRecordModel.image_matching_status == image_matching_status.upper().strip())
+
     total_records = q.count()
     order_col = getattr(VoterRecordModel, sort_by, VoterRecordModel.id)
     q = q.order_by(desc(order_col) if order.lower() == "desc" else asc(order_col))
@@ -1666,6 +1689,7 @@ def list_voter_records(
     ward_number: Optional[str] = None,
     search_unique_id: Optional[str] = None,
     source_page: Optional[int] = None,
+    image_matching_status: Optional[str] = None,
     sort_by: str = "id",
     order: str = "asc",
     current_user: Optional[UserModel] = Depends(get_optional_current_user),
@@ -1774,6 +1798,9 @@ def list_voter_records(
 
     if source_page:
         q = q.filter(VoterRecordModel.source_page == source_page)
+
+    if image_matching_status and image_matching_status != "all":
+        q = q.filter(VoterRecordModel.image_matching_status == image_matching_status.upper().strip())
 
     total_records = q.count()
     order_col = getattr(VoterRecordModel, sort_by, VoterRecordModel.id)
@@ -2466,7 +2493,11 @@ def verify_voter_code(
         unique_key=voter.unique_key,
         voter_id=voter.voter_id,
         document_id=voter.document_id,
-        source_page=voter.source_page
+        source_page=voter.source_page,
+        serial_no=voter.serial_no,
+        photo_path=voter.photo_path,
+        block_bbox=voter.block_bbox,
+        photo_bbox=voter.photo_bbox
     )
 
     photo_base64 = None
@@ -2529,6 +2560,9 @@ def verify_voter_code(
         "has_photo": bool(photo_path and os.path.exists(photo_path)),
         "photo_url": f"/api/voters/{voter.unique_key}/photo" if photo_path else None,
         "photo_base64": photo_base64,
+        "image_matching_status": getattr(voter, "image_matching_status", "MISSING") or "MISSING",
+        "block_bbox": getattr(voter, "block_bbox", None),
+        "photo_bbox": getattr(voter, "photo_bbox", None),
         "is_paid": is_paid,
         "payment_status": "PAID" if is_paid else "UNPAID",
         "applicable_amount": applicable_amt,
@@ -2546,14 +2580,18 @@ def get_voter_photo_endpoint(
     unique_code: str,
     db: Session = Depends(get_db)
 ):
-    """Serve voter photo by unique key or EPIC ID."""
+    """Serve voter photo by unique key, EPIC ID, or database primary key ID."""
     code = (unique_code or "").strip().upper()
-    voter = db.query(VoterRecordModel).filter(
-        or_(
-            VoterRecordModel.unique_key == code,
-            VoterRecordModel.voter_id == unique_code.strip()
-        )
-    ).first()
+    voter_query = db.query(VoterRecordModel)
+    
+    conds = [
+        VoterRecordModel.unique_key == code,
+        VoterRecordModel.voter_id == unique_code.strip()
+    ]
+    if unique_code.strip().isdigit():
+        conds.append(VoterRecordModel.id == int(unique_code.strip()))
+        
+    voter = voter_query.filter(or_(*conds)).first()
 
     if not voter:
         raise HTTPException(status_code=404, detail="Voter not found.")
@@ -2562,13 +2600,48 @@ def get_voter_photo_endpoint(
         unique_key=voter.unique_key,
         voter_id=voter.voter_id,
         document_id=voter.document_id,
-        source_page=voter.source_page
+        source_page=voter.source_page,
+        serial_no=voter.serial_no,
+        photo_path=voter.photo_path,
+        block_bbox=voter.block_bbox,
+        photo_bbox=voter.photo_bbox
     )
 
     if not photo_path or not os.path.exists(photo_path):
         raise HTTPException(status_code=404, detail="Photo not available.")
 
     return FileResponse(photo_path, media_type="image/jpeg")
+
+class PhotoVerificationUpdate(BaseModel):
+    status: str # MATCHED, NEEDS_VERIFICATION, MISSING, EXTRACTION_FAILED
+    notes: Optional[str] = None
+
+@app.put("/api/voters/{voter_id}/verify-photo", tags=["Voter Verification"])
+def verify_voter_photo_status(
+    voter_id: int,
+    payload: PhotoVerificationUpdate,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Allow field worker or admin to manually verify or update voter photo match status."""
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == voter_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter record not found.")
+
+    valid_statuses = ["MATCHED", "NEEDS_VERIFICATION", "MISSING", "EXTRACTION_FAILED"]
+    new_status = payload.status.upper().strip()
+    if new_status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of {valid_statuses}")
+
+    voter.image_matching_status = new_status
+    voter.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(voter)
+    return {
+        "success": True,
+        "message": f"Photo status updated to {new_status}",
+        "voter": voter.to_dict()
+    }
 
 @app.get("/api/wallet/balance", tags=["Wallet"])
 def get_logged_in_wallet_balance(

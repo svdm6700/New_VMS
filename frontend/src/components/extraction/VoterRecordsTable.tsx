@@ -24,7 +24,14 @@ import {
   AlertCircle,
   MapPin,
   CreditCard,
-  DollarSign
+  DollarSign,
+  Camera,
+  CheckCircle2,
+  AlertTriangle,
+  User,
+  Image as ImageIcon,
+  Eye,
+  X
 } from 'lucide-react';
 import { VoterRecord, DocumentItem } from '../../types/document';
 import { documentService } from '../../services/documentService';
@@ -54,11 +61,16 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
   const [constituencyFilter, setConstituencyFilter] = useState('all');
   const [areaFilter, setAreaFilter] = useState('all');
   const [wardFilter, setWardFilter] = useState('all');
+  const [photoFilter, setPhotoFilter] = useState('all');
   const [pageFilter, setPageFilter] = useState<string>('');
   const [sortBy, setSortBy] = useState('id');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Photo Preview & Manual Verification Modal State
+  const [previewPhotoVoter, setPreviewPhotoVoter] = useState<VoterRecord | null>(null);
+  const [verifyingPhotoId, setVerifyingPhotoId] = useState<number | null>(null);
 
   // Active document for location header
   const activeDocument = documents.find((d) => d.id === selectedDocId) || (documents.length > 0 ? documents[0] : null);
@@ -114,6 +126,7 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
         constituency: constituencyFilter !== 'all' ? constituencyFilter : undefined,
         area: areaFilter !== 'all' ? areaFilter : undefined,
         ward_number: wardFilter !== 'all' ? wardFilter : undefined,
+        image_matching_status: photoFilter !== 'all' ? photoFilter : undefined,
         source_page: pageFilter ? parseInt(pageFilter) : undefined,
         sort_by: sortBy,
         order: sortOrder,
@@ -127,7 +140,7 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [page, limit, selectedDocId, searchQuery, genderFilter, districtFilter, constituencyFilter, areaFilter, wardFilter, pageFilter, sortBy, sortOrder]);
+  }, [page, limit, selectedDocId, searchQuery, genderFilter, districtFilter, constituencyFilter, areaFilter, wardFilter, photoFilter, pageFilter, sortBy, sortOrder]);
 
   useEffect(() => {
     fetchRecords();
@@ -190,6 +203,23 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
 
   const isAllPageSelected = records.length > 0 && records.every((r) => selectedVoterIds.includes(r.id));
   const isSomePageSelected = records.some((r) => selectedVoterIds.includes(r.id)) && !isAllPageSelected;
+
+  const handleUpdatePhotoStatus = async (voterId: number, newStatus: string, notes?: string) => {
+    setVerifyingPhotoId(voterId);
+    try {
+      await documentService.verifyVoterPhotoStatus(voterId, newStatus, notes);
+      setRecords((prev) =>
+        prev.map((r) => (r.id === voterId ? { ...r, image_matching_status: newStatus } : r))
+      );
+      if (previewPhotoVoter && previewPhotoVoter.id === voterId) {
+        setPreviewPhotoVoter((prev) => (prev ? { ...prev, image_matching_status: newStatus } : null));
+      }
+    } catch (err: any) {
+      alert(`Failed to update photo verification status: ${err.message || err}`);
+    } finally {
+      setVerifyingPhotoId(null);
+    }
+  };
 
   // PDF Generation Handlers (A4, 27 Voters per Page, 3x9 Grid)
   const handlePrintIndividualVoterPdf = async (voter: VoterRecord) => {
@@ -566,6 +596,24 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
             </select>
           </div>
 
+          {/* Photo Match Status Filter */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Photo (ఫొటో స్థితి)</label>
+            <select
+              value={photoFilter}
+              onChange={(e) => {
+                setPhotoFilter(e.target.value);
+                setPage(1);
+              }}
+              className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+            >
+              <option value="all">All Photos</option>
+              <option value="MATCHED">Matched (సరిపోలినవి)</option>
+              <option value="NEEDS_VERIFICATION">Needs Verification (సమీక్ష)</option>
+              <option value="MISSING">Missing (లేనివి)</option>
+            </select>
+          </div>
+
           {/* Page Filter & Refresh */}
           <div className="flex items-end gap-2">
             <div className="flex-1">
@@ -720,6 +768,7 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
                 >
                   అ.ఓ.జా.వ.సం. {renderSortIcon('electoral_roll_no')}
                 </th>
+                <th className="px-2 py-3 text-center w-24">ఫొటో (Photo)</th>
                 <th
                   onClick={() => handleSort('voter_name')}
                   className="px-4 py-3 cursor-pointer hover:bg-slate-100/60 dark:hover:bg-slate-700/50 min-w-[160px]"
@@ -770,14 +819,14 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-xs text-slate-800 dark:text-slate-200">
               {loading && records.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="py-12 text-center text-slate-400">
+                  <td colSpan={14} className="py-12 text-center text-slate-400">
                     <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-brand-600" />
                     Loading voter records from database...
                   </td>
                 </tr>
               ) : records.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="py-12 text-center text-slate-400">
+                  <td colSpan={14} className="py-12 text-center text-slate-400">
                     <p className="font-semibold text-slate-700 dark:text-slate-300">No voter records found.</p>
                     <p className="text-xs mt-1">Upload a Telugu PDF to extract and store records automatically.</p>
                   </td>
@@ -819,6 +868,41 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
                     </td>
                     <td className="px-3 py-2.5 text-slate-600 dark:text-slate-400 whitespace-nowrap text-[11px]">
                       {r.electoral_roll_no}
+                    </td>
+                    <td className="px-2 py-2 text-center whitespace-nowrap">
+                      <div
+                        className="inline-flex flex-col items-center gap-1 cursor-pointer group/photo"
+                        onClick={() => setPreviewPhotoVoter(r)}
+                        title="Click to preview photograph & spatial mapping details"
+                      >
+                        <div className="w-8 h-10 rounded-md overflow-hidden bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-2xs flex items-center justify-center relative group-hover/photo:border-brand-500 transition-colors">
+                          {r.has_photo || r.photo_url || r.photo_path ? (
+                            <img
+                              src={r.photo_url || `/api/voters/${r.unique_key || r.id}/photo`}
+                              alt={r.voter_name}
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = 'none';
+                              }}
+                            />
+                          ) : (
+                            <User className="w-4 h-4 text-slate-300 dark:text-slate-600" />
+                          )}
+                        </div>
+                        {r.image_matching_status === 'MATCHED' ? (
+                          <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
+                            <CheckCircle2 className="w-2.5 h-2.5" /> Matched
+                          </span>
+                        ) : r.image_matching_status === 'NEEDS_VERIFICATION' ? (
+                          <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">
+                            <AlertTriangle className="w-2.5 h-2.5" /> Verify
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-1 py-0.2 rounded text-[9px] font-medium bg-slate-100 text-slate-500 border border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700">
+                            Missing
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-2.5 font-semibold text-slate-900 dark:text-slate-100 font-telugu text-[13px]">
                       {r.voter_name}
@@ -1003,6 +1087,115 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
         filename={pdfFilename}
         loading={pdfLoading}
       />
+
+      {/* Voter Photo Preview & Verification Modal */}
+      {previewPhotoVoter && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl max-w-lg w-full p-6 overflow-hidden relative">
+            <button
+              onClick={() => setPreviewPhotoVoter(null)}
+              className="absolute right-4 top-4 p-2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-2 mb-4">
+              <span className="p-2 bg-brand-50 dark:bg-brand-950 text-brand-600 dark:text-brand-400 rounded-xl">
+                <Camera className="w-5 h-5" />
+              </span>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 font-telugu">
+                  ఓటరు ఫొటో & వివరాల ధృవీకరణ
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Voter Photograph & Spatial Extraction Verification Preview
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 my-4">
+              {/* Photo Display Card */}
+              <div className="flex flex-col items-center justify-center p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700/60">
+                <div className="w-32 h-40 rounded-xl overflow-hidden bg-white dark:bg-slate-900 border-2 border-brand-500/30 shadow-md flex items-center justify-center relative">
+                  {previewPhotoVoter.has_photo || previewPhotoVoter.photo_url || previewPhotoVoter.photo_path ? (
+                    <img
+                      src={previewPhotoVoter.photo_url || `/api/voters/${previewPhotoVoter.unique_key || previewPhotoVoter.id}/photo`}
+                      alt={previewPhotoVoter.voter_name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="text-center p-3">
+                      <User className="w-10 h-10 text-slate-300 mx-auto mb-1" />
+                      <span className="text-[10px] text-slate-400">(No Photo Extracted)</span>
+                    </div>
+                  )}
+                </div>
+                <div className="mt-3 text-center">
+                  <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${
+                    previewPhotoVoter.image_matching_status === 'MATCHED'
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                      : previewPhotoVoter.image_matching_status === 'NEEDS_VERIFICATION'
+                      ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800'
+                      : 'bg-slate-100 text-slate-600 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                  }`}>
+                    {previewPhotoVoter.image_matching_status === 'MATCHED' && <CheckCircle2 className="w-3.5 h-3.5" />}
+                    {previewPhotoVoter.image_matching_status === 'NEEDS_VERIFICATION' && <AlertTriangle className="w-3.5 h-3.5" />}
+                    {previewPhotoVoter.image_matching_status || 'MISSING'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Voter Details Card */}
+              <div className="space-y-2 text-xs">
+                <div className="p-2 bg-slate-50 dark:bg-slate-800/40 rounded-xl">
+                  <span className="text-slate-400 block text-[10px] uppercase font-semibold">ఓటరు పేరు (Name)</span>
+                  <span className="font-bold text-slate-900 dark:text-slate-100 font-telugu text-sm">{previewPhotoVoter.voter_name}</span>
+                </div>
+                <div className="p-2 bg-slate-50 dark:bg-slate-800/40 rounded-xl">
+                  <span className="text-slate-400 block text-[10px] uppercase font-semibold">EPIC / ఓటరు ఐడి</span>
+                  <span className="font-mono font-bold text-brand-600 dark:text-brand-400">{previewPhotoVoter.voter_id}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="p-2 bg-slate-50 dark:bg-slate-800/40 rounded-xl">
+                    <span className="text-slate-400 block text-[10px]">వరుస సంఖ్య</span>
+                    <span className="font-mono font-bold text-slate-800 dark:text-slate-200">#{previewPhotoVoter.serial_no}</span>
+                  </div>
+                  <div className="p-2 bg-slate-50 dark:bg-slate-800/40 rounded-xl">
+                    <span className="text-slate-400 block text-[10px]">మూల పుట</span>
+                    <span className="font-mono font-bold text-slate-800 dark:text-slate-200">Page {previewPhotoVoter.source_page}</span>
+                  </div>
+                </div>
+                <div className="p-2 bg-slate-50 dark:bg-slate-800/40 rounded-xl">
+                  <span className="text-slate-400 block text-[10px]">బ్లాక్ కోఆర్డినేట్లు (Block BBox)</span>
+                  <span className="font-mono text-[10px] text-slate-600 dark:text-slate-400 break-all">{previewPhotoVoter.block_bbox || 'Spatial Vector Grid'}</span>
+                </div>
+                <div className="p-2 bg-slate-50 dark:bg-slate-800/40 rounded-xl">
+                  <span className="text-slate-400 block text-[10px]">ఫొటో కోఆర్డినేట్లు (Photo BBox)</span>
+                  <span className="font-mono text-[10px] text-slate-600 dark:text-slate-400 break-all">{previewPhotoVoter.photo_bbox || 'Contained in block'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Verification Actions */}
+            <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2">
+              <button
+                disabled={verifyingPhotoId === previewPhotoVoter.id}
+                onClick={() => handleUpdatePhotoStatus(previewPhotoVoter.id, 'NEEDS_VERIFICATION')}
+                className="px-3 py-1.5 rounded-xl border border-amber-300 dark:border-amber-800 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 text-xs font-semibold transition-colors"
+              >
+                సమీక్ష అవసరం (Flag Verify)
+              </button>
+              <button
+                disabled={verifyingPhotoId === previewPhotoVoter.id}
+                onClick={() => handleUpdatePhotoStatus(previewPhotoVoter.id, 'MATCHED')}
+                className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors"
+              >
+                సరిచూడబడింది (Confirm Matched)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

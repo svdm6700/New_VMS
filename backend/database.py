@@ -242,6 +242,10 @@ class VoterRecordModel(Base):
     unique_key = Column(String(5), unique=True, index=True, nullable=True)
     source_page = Column(Integer, default=1)
     ocr_confidence = Column(Float, nullable=True)
+    block_bbox = Column(String(128), nullable=True)
+    photo_bbox = Column(String(128), nullable=True)
+    photo_path = Column(String(512), nullable=True)
+    image_matching_status = Column(String(64), default="NOT_PROCESSED", index=True) # MATCHED, MISSING, NEEDS_VERIFICATION, EXTRACTION_FAILED
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -272,6 +276,12 @@ class VoterRecordModel(Base):
             "unique_id": self.unique_key,
             "source_page": self.source_page,
             "ocr_confidence": self.ocr_confidence,
+            "block_bbox": self.block_bbox,
+            "photo_bbox": self.photo_bbox,
+            "photo_path": self.photo_path,
+            "image_matching_status": self.image_matching_status or "NOT_PROCESSED",
+            "has_photo": bool(self.photo_path and os.path.exists(self.photo_path)),
+            "photo_url": f"/api/voters/{self.unique_key or self.id}/photo" if (self.photo_path or self.unique_key) else None,
             "district": getattr(self.document, "district", None) if self.document and self.document.district else "Not Available",
             "constituency": getattr(self.document, "constituency", None) if self.document and self.document.constituency else "Not Available",
             "area": getattr(self.document, "area", None) if self.document and self.document.area else "Not Available",
@@ -719,6 +729,19 @@ def ensure_tables_exist():
     """Ensure all SQLAlchemy metadata tables and indexes are created automatically."""
     try:
         Base.metadata.create_all(bind=engine)
+        # Non-destructive auto-migration for spatial voter photo columns
+        with engine.connect() as conn:
+            for col, col_type in [
+                ("block_bbox", "VARCHAR(128)"),
+                ("photo_bbox", "VARCHAR(128)"),
+                ("photo_path", "VARCHAR(512)"),
+                ("image_matching_status", "VARCHAR(64) DEFAULT 'NOT_PROCESSED'"),
+            ]:
+                try:
+                    conn.execute(text(f"ALTER TABLE voter_records ADD COLUMN IF NOT EXISTS {col} {col_type};"))
+                except Exception as _col_err:
+                    pass
+            conn.commit()
         print("[VMS Database] Tables verified/created successfully.")
     except Exception as e:
         print(f"[VMS Database Error] Failed to create tables: {e}")

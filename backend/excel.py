@@ -84,6 +84,8 @@ def map_records_to_voter_rows(records):
                     voter_id = m.group(1)
                     break
 
+        photo_status = r.get("image_matching_status") or "MATCHED" if r.get("photo_path") else "MISSING"
+
         rows.append([
             serial_no or "Not Available",
             roll_no or "Not Available",
@@ -94,6 +96,7 @@ def map_records_to_voter_rows(records):
             gender or "Not Available",
             house_no or "Not Available",
             voter_id or "Not Available",
+            photo_status,
             page
         ])
     return rows
@@ -117,6 +120,7 @@ def create_excel(result: dict) -> bytes:
         "లింగము (Gender)",
         "ఇంటి సంఖ్య (House No.)",
         "ఓటరు ఐడి కార్డు నెం. (Voter ID)",
+        "ఫొటో స్థితి (Photo Match Status)",
         "మూల PDF పుట (Source PDF Page)"
     ]
 

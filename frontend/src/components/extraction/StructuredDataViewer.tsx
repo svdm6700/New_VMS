@@ -10,6 +10,10 @@ import {
   Layers,
   FileText,
   AlertCircle,
+  CheckCircle2,
+  Camera,
+  User,
+  Eye,
 } from 'lucide-react';
 import { ExtractedRecord, DocumentResult } from '../../types/document';
 import { extractRecordsFromDocument } from '../../utils/recordParser';
@@ -329,10 +333,32 @@ export const StructuredDataViewer: React.FC<StructuredDataViewerProps> = ({
                 <span className="px-2 py-0.5 rounded-md bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 text-[10px] font-semibold">
                   పేజీ {rec.page}
                 </span>
+                {rec.image_matching_status && (
+                  <span
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                      rec.image_matching_status === 'MATCHED'
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                        : rec.image_matching_status === 'NEEDS_VERIFICATION'
+                        ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800'
+                        : 'bg-slate-100 text-slate-500 border border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                    }`}
+                  >
+                    {rec.image_matching_status === 'MATCHED' && <CheckCircle2 className="w-3 h-3" />}
+                    {rec.image_matching_status === 'NEEDS_VERIFICATION' && <AlertCircle className="w-3 h-3" />}
+                    {rec.image_matching_status}
+                  </span>
+                )}
               </div>
-              <span className="text-[11px] text-slate-400 font-medium">
-                {rec.fields.length} Fields
-              </span>
+              <div className="flex items-center gap-3">
+                {rec.photo_path && (
+                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono flex items-center gap-1">
+                    <Camera className="w-3 h-3" /> Photo Saved
+                  </span>
+                )}
+                <span className="text-[11px] text-slate-400 font-medium">
+                  {rec.fields.length} Fields
+                </span>
+              </div>
             </div>
 
             {/* 2-Column Table: Field Name | Extracted Value */}

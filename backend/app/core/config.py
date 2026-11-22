@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     STORAGE_TYPE: str = "local"
     STORAGE_BASE_DIR: str = "storage"
     STORAGE_UPLOAD_DIR: str = "storage/uploads"
+    STORAGE_PHOTOS_DIR: str = "storage/photos"
     STORAGE_TEMP_DIR: str = "storage/temp"
     STORAGE_EXPORT_DIR: str = "storage/exports"
 
@@ -162,6 +163,7 @@ class Settings(BaseSettings):
         dirs_to_create = [
             self.resolve_path(self.STORAGE_BASE_DIR),
             self.resolve_path(self.STORAGE_UPLOAD_DIR),
+            self.resolve_path(self.STORAGE_PHOTOS_DIR),
             self.resolve_path(self.STORAGE_TEMP_DIR),
             self.resolve_path(self.STORAGE_EXPORT_DIR),
             self.resolve_path(self.PDF_UPLOAD_DIR),

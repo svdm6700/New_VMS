@@ -83,6 +83,12 @@ export interface VoterRecord {
   unique_id?: string;
   source_page: number;
   ocr_confidence?: number | null;
+  photo_path?: string | null;
+  photo_url?: string | null;
+  has_photo?: boolean;
+  image_matching_status?: 'MATCHED' | 'MISSING' | 'NEEDS_VERIFICATION' | 'EXTRACTION_FAILED' | string;
+  block_bbox?: string | null;
+  photo_bbox?: string | null;
   created_at: string;
   updated_at: string;
 
@@ -237,6 +243,18 @@ export interface ExtractedRecord {
   page: number;
   title?: string;
   fields: ExtractedField[];
+  serial_no?: string;
+  voter_id?: string;
+  voter_name?: string;
+  relation_type?: string;
+  relation_name?: string;
+  house_no?: string;
+  age?: string;
+  gender?: string;
+  block_bbox?: string | null;
+  photo_bbox?: string | null;
+  photo_path?: string | null;
+  image_matching_status?: string | null;
 }
 
 export interface DocumentResult {

@@ -2,8 +2,10 @@ import io
 import os
 import re
 import json
+import uuid
 import shutil
 import requests
+from pathlib import Path
 from PIL import Image
 
 try:
@@ -23,6 +25,10 @@ try:
     from backend.excel import create_excel
 except ImportError:
     from excel import create_excel
+
+STORAGE_BASE = Path(__file__).resolve().parent.parent / "storage"
+PHOTOS_DIR = STORAGE_BASE / "photos"
+PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Automatically locate Tesseract on Windows if not already in PATH
 if not shutil.which("tesseract"):
@@ -84,11 +90,298 @@ Page {page_no}:
     except Exception as exc:
         raise RuntimeError(f"AI processing failed on page {page_no}: {exc}") from exc
 
+def detect_voter_cells(page):
+    """
+    Detect individual voter block bounding boxes on an electoral roll page.
+    Uses vector drawing analysis with text header and geometric fallbacks.
+    """
+    drawings = page.get_drawings()
+    cell_rects = []
+    page_rect = page.rect
+    
+    for d in drawings:
+        r = d.get('rect')
+        if not r:
+            continue
+        # Standard voter block dimensions in A4 electoral rolls
+        # Width typically 130-240 pt, height typically 50-130 pt
+        if 130 <= r.width <= 240 and 50 <= r.height <= 130:
+            if r.width > 500 and r.height > 700:
+                continue
+            cell_rects.append(fitz.Rect(r))
+            
+    # Deduplicate overlapping rectangles
+    unique_cells = []
+    for r in cell_rects:
+        is_dup = False
+        for u in unique_cells:
+            inter = fitz.Rect(r).intersect(u)
+            if inter.is_valid and inter.get_area() > 0.80 * min(r.get_area(), u.get_area()):
+                is_dup = True
+                break
+        if not is_dup:
+            unique_cells.append(r)
+            
+    # Sort in standard reading order: Row-by-row (top to bottom), then column-by-column (left to right)
+    if unique_cells:
+        unique_cells.sort(key=lambda r: (round(r.y0 / 15) * 15, r.x0))
+        return unique_cells
+
+    # Fallback 1: Text-header anchored clustering
+    blocks = page.get_text("blocks")
+    headers = []
+    for b in blocks:
+        text = b[4]
+        if re.search(r'(?:వ\.సం|గ్రా\.పం|క్ర\.సం|Sl\.?\s*No|S\.No)\s*[:\.]?\s*\d+', text, re.IGNORECASE):
+            headers.append(fitz.Rect(b[:4]))
+            
+    if len(headers) >= 6:
+        headers.sort(key=lambda r: (round(r.y0 / 15) * 15, r.x0))
+        return headers
+
+    # Fallback 2: Standard 3-column x 9-row or 3-column x 10-row grid for standard A4 voter rolls
+    sample_text = page.get_text("text")
+    if any(k in sample_text for k in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము"]):
+        grid_cells = []
+        margin_x = 32.0
+        margin_top = 38.0
+        content_w = page_rect.width - 2 * margin_x
+        cols = 3
+        col_w = content_w / cols
+        rows = 9
+        row_h = (page_rect.height - margin_top - 38.0) / rows
+        for row in range(rows):
+            for col in range(cols):
+                c_rect = fitz.Rect(
+                    margin_x + col * col_w,
+                    margin_top + row * row_h,
+                    margin_x + (col + 1) * col_w - 4,
+                    margin_top + (row + 1) * row_h - 4
+                )
+                grid_cells.append(c_rect)
+        return grid_cells
+
+    return []
+
+def parse_voter_cell_text(raw_text, page_no=1):
+    """Accurately parse all structured fields from a voter block text."""
+    text = (raw_text or "").replace("\xa0", " ").strip()
+    
+    # 1. Serial Number
+    m_sno = re.search(r'(?:వ\.సం|గ్రా\.పం\.ఓ\.జా\.వ\.సం|క్ర\.సం|వరుస సంఖ్య|Sl\.?\s*No|S\.No)\s*[:\.]?\s*(\d+)', text, re.IGNORECASE)
+    serial_no = m_sno.group(1).strip() if m_sno else "Not Available"
+    
+    # 2. Roll No
+    m_roll = re.search(r'(?:అ\.ఓ\.జా\.వ\.సం|రోల్\s*సంఖ్య|Roll\s*No)\s*[:\.]?\s*([A-Za-z0-9\s\-\/]+)', text)
+    roll = m_roll.group(1).strip() if m_roll else "Not Available"
+    
+    # 3. EPIC Number (Voter ID)
+    m_epic = re.search(r'\b([A-Z]{3,4}[0-9]{7})\b', text)
+    if not m_epic:
+        m_epic = re.search(r'\b([A-Z]{2,4}[0-9]{6,8})\b', text)
+    if not m_epic:
+        m_epic = re.search(r'(?:ఓటరు ఐడి|గుర్తింపు కార్డు|EPIC)\s*[:\.\-]?\s*([A-Za-z0-9]+)', text)
+    voter_id = m_epic.group(1).strip() if m_epic else "Not Available"
+
+    # Section / Security code (often 5 characters below EPIC in Telugu rolls, e.g. RN7FF)
+    sec_code = None
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    for idx_l, line in enumerate(lines):
+        if voter_id and voter_id in line and idx_l + 1 < len(lines):
+            cand = lines[idx_l + 1].strip()
+            if re.match(r'^[A-Z0-9]{4,6}$', cand):
+                sec_code = cand
+                break
+    
+    # 4. Voter Name
+    m_name = re.search(r'(?:పేరు|ఓటరు పేరు|Name)\s*[:\.]?\s*([^\n\r]+)', text)
+    voter_name = m_name.group(1).strip() if m_name else "Not Available"
+    voter_name = re.split(r'(?:భర్త|తండ్రి|తల్లి|ఇంటి|వయస్సు)', voter_name)[0].strip()
+    
+    # 5. Relation (Father / Husband / Mother)
+    rel_type = "Not Available"
+    rel_name = "Not Available"
+    m_father = re.search(r'(?:తండ్రి\s*పేరు|తండ్రి|Father\'?s?\s*Name)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
+    m_husband = re.search(r'(?:భర్త\s*పేరు|భర్త|Husband\'?s?\s*Name)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
+    m_mother = re.search(r'(?:తల్లి\s*పేరు|తల్లి|Mother\'?s?\s*Name)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
+    
+    if m_father:
+        rel_type = "తండ్రి"
+        rel_name = re.split(r'(?:ఇంటి|వయస్సు|లింగం|House)', m_father.group(1))[0].strip()
+    elif m_husband:
+        rel_type = "భర్త"
+        rel_name = re.split(r'(?:ఇంటి|వయస్సు|లింగం|House)', m_husband.group(1))[0].strip()
+    elif m_mother:
+        rel_type = "తల్లి"
+        rel_name = re.split(r'(?:ఇంటి|వయస్సు|లింగం|House)', m_mother.group(1))[0].strip()
+        
+    # 6. House No
+    m_house = re.search(r'(?:ఇంటి\s*సంఖ్య|House\s*No)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
+    house_no = m_house.group(1).strip() if m_house else "Not Available"
+    house_no = re.split(r'(?:వయస్సు|లింగం|Age|Gender)', house_no)[0].strip()
+    
+    # 7. Age
+    m_age = re.search(r'(?:వయస్సు|Age)\s*[:\.]?\s*(\d+)', text, re.IGNORECASE)
+    age = m_age.group(1).strip() if m_age else "Not Available"
+    
+    # 8. Gender
+    m_gen = re.search(r'(?:లింగం|లింగము|Gender)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
+    gender = "Not Available"
+    if m_gen:
+        raw_gen = m_gen.group(1).strip()
+        if any(w in raw_gen for w in ["స్త్రీ", "స్త్రీి", "Female", "F"]):
+            gender = "స్త్రీ"
+        elif any(w in raw_gen for w in ["పురుషుడు", "పు", "Male", "M"]):
+            gender = "పురుషుడు"
+        else:
+            gender = raw_gen
+            
+    fields = [
+        {"field_name": "గ్రా.పం.ఓ.జా.వ.సం.", "value": serial_no},
+        {"field_name": "అ.ఓ.జా.వ.సం.", "value": roll},
+        {"field_name": "ఓటరు పేరు", "value": voter_name},
+        {"field_name": f"{rel_type} పేరు" if rel_type != "Not Available" else "తండ్రి / భర్త పేరు", "value": rel_name},
+        {"field_name": "ఇంటి సంఖ్య", "value": house_no},
+        {"field_name": "ఓటరు ఐడి కార్డు నెం.", "value": voter_id},
+        {"field_name": "వయస్సు", "value": age},
+        {"field_name": "లింగము", "value": gender},
+        {"field_name": "మూల PDF పుట", "value": str(page_no)},
+    ]
+    if sec_code:
+        fields.append({"field_name": "సెక్షన్ కోడ్", "value": sec_code})
+
+    return {
+        "serial_no": serial_no,
+        "electoral_roll_no": roll,
+        "voter_id": voter_id,
+        "voter_name": voter_name,
+        "relation_type": rel_type,
+        "relation_name": rel_name,
+        "house_no": house_no,
+        "age": age,
+        "gender": gender,
+        "security_code": sec_code,
+        "fields": fields,
+        "raw_text": text
+    }
+
+def match_and_extract_voter_photo(
+    doc,
+    page,
+    cell_rect,
+    page_no,
+    serial_no,
+    voter_id,
+    doc_id,
+    image_infos
+):
+    """
+    Extract original photograph for a voter block using strict spatial containment.
+    Never uses sequential index or nearest neighbor without block ownership verification.
+    """
+    cell = fitz.Rect(cell_rect)
+    matching_images = []
+    
+    for img in image_infos:
+        ibox = fitz.Rect(img['bbox'])
+        center = fitz.Point((ibox.x0 + ibox.x1) / 2, (ibox.y0 + ibox.y1) / 2)
+        if cell.contains(center) or (ibox.intersects(cell) and ibox.intersect(cell).get_area() > 0.45 * ibox.get_area()):
+            matching_images.append(img)
+            
+    safe_epic = voter_id if voter_id and voter_id != "Not Available" else "no_epic"
+    base_filename = f"{doc_id}_p{page_no}_s{serial_no}_{safe_epic}.jpg"
+    out_path = PHOTOS_DIR / base_filename
+    
+    if len(matching_images) == 1:
+        img_info = matching_images[0]
+        xref = img_info.get("xref")
+        saved = False
+        
+        # Method A: Extract high-fidelity original embedded image bytes
+        if xref:
+            try:
+                extracted = doc.extract_image(xref)
+                if extracted and "image" in extracted and len(extracted["image"]) > 100:
+                    with open(out_path, "wb") as pf:
+                        pf.write(extracted["image"])
+                    saved = True
+            except Exception:
+                saved = False
+                
+        # Method B: High-res pixmap render from page clip (fallback)
+        if not saved:
+            try:
+                ibox = fitz.Rect(img_info['bbox'])
+                pix = page.get_pixmap(clip=ibox, matrix=fitz.Matrix(2, 2))
+                pix.save(str(out_path))
+                saved = True
+            except Exception:
+                saved = False
+                
+        if saved:
+            return {
+                "status": "MATCHED",
+                "photo_path": str(out_path.resolve()),
+                "photo_bbox": [round(x, 1) for x in img_info['bbox']]
+            }
+        else:
+            return {
+                "status": "EXTRACTION_FAILED",
+                "photo_path": None,
+                "photo_bbox": [round(x, 1) for x in img_info['bbox']]
+            }
+
+    elif len(matching_images) > 1:
+        first_img = matching_images[0]
+        try:
+            xref = first_img.get("xref")
+            extracted = doc.extract_image(xref) if xref else None
+            if extracted and "image" in extracted:
+                with open(out_path, "wb") as pf:
+                    pf.write(extracted["image"])
+            else:
+                pix = page.get_pixmap(clip=fitz.Rect(first_img['bbox']), matrix=fitz.Matrix(2, 2))
+                pix.save(str(out_path))
+        except Exception:
+            pass
+        return {
+            "status": "NEEDS_VERIFICATION",
+            "photo_path": str(out_path.resolve()) if out_path.exists() else None,
+            "photo_bbox": [round(x, 1) for x in first_img['bbox']]
+        }
+
+    else:
+        # Scanned PDF check: Attempt high-res crop of the photo sub-region inside voter cell
+        photo_sub_rect = fitz.Rect(
+            cell.x0 + 0.65 * cell.width,
+            cell.y0 + 0.12 * cell.height,
+            cell.x1 - 2,
+            cell.y1 - 4
+        )
+        try:
+            pix = page.get_pixmap(clip=photo_sub_rect, matrix=fitz.Matrix(2, 2))
+            img_pil = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
+            stat = img_pil.getextrema()
+            if stat[1] - stat[0] > 35:
+                pix.save(str(out_path))
+                return {
+                    "status": "MATCHED",
+                    "photo_path": str(out_path.resolve()),
+                    "photo_bbox": [round(x, 1) for x in photo_sub_rect]
+                }
+        except Exception:
+            pass
+
+        return {
+            "status": "MISSING",
+            "photo_path": None,
+            "photo_bbox": None
+        }
+
 def parse_voter_blocks(text, page_no):
-    """Accurately parse Andhra Pradesh / Telangana Telugu electoral roll voter blocks."""
+    """Legacy voter block text parser maintained for backward compatibility."""
     records = []
     text = (text or "").replace("\xa0", " ")
-    # Fix broken label lines where colon or label was split across newlines
     text = re.sub(r'(\n|^)([\u0C00-\u0C7F\w\.\s]+?)\n\s*:\s*', r'\1\2 : ', text)
     text = re.sub(r'గ్రా[ా-్]?\s*\n\s*\.పం', 'గ్రా.పం', text)
     text = re.sub(r'స్\s*\n\s*త్రీ', 'స్త్రీ', text)
@@ -97,91 +390,99 @@ def parse_voter_blocks(text, page_no):
     text = re.sub(r'ఇంటి\s*\n\s*సంఖ్య', 'ఇంటి సంఖ్య', text)
     text = re.sub(r'ఓటరు\s*ఐడి[\.\s]*\n\s*కార్డు', 'ఓటరు ఐడి కార్డు', text)
 
-    parts = re.split(r'(?=గ్రా\.పం\.ఓ\.జా\.వ\.సం\.)', text)
+    parts = re.split(r'(?=(?:గ్రా\.పం\.ఓ\.జా\.వ\.సం\.|వ\.సం\s*:))', text)
     for p in parts:
-        if not p.strip() or 'గ్రా.పం.ఓ.జా.వ.సం.' not in p:
+        if not p.strip() or not any(k in p for k in ['గ్రా.పం.ఓ.జా.వ.సం.', 'వ.సం']):
             continue
-        fields = []
-        
-        # 1. Serial No
-        m_sno = re.search(r'గ్రా\.పం\.ఓ\.జా\.వ\.సం\.\s*(\d+)', p)
-        sno = m_sno.group(1).strip() if m_sno else "Not Available"
-        fields.append({"field_name": "గ్రా.పం.ఓ.జా.వ.సం.", "value": sno})
-        
-        # 2. Roll No
-        m_roll = re.search(r'అ\.ఓ\.జా\.వ\.సం\.\s*([0-9\s\-]+)', p)
-        roll = m_roll.group(1).strip() if m_roll else "Not Available"
-        fields.append({"field_name": "అ.ఓ.జా.వ.సం.", "value": roll})
-        
-        # 3. Voter Name
-        m_name = re.search(r'ఓటరు పేరు\s*:\s*([^\n\r]+)', p)
-        name = m_name.group(1).strip() if m_name else "Not Available"
-        fields.append({"field_name": "ఓటరు పేరు", "value": name})
-        
-        # 4 & 5. Relation Name
-        m_father = re.search(r'తండ్రి\s*పేరు\s*:\s*([^\n\r]+)', p)
-        m_husband = re.search(r'భర్త\s*పేరు\s*:\s*([^\n\r]+)', p)
-        if m_father:
-            fields.append({"field_name": "తండ్రి పేరు", "value": m_father.group(1).strip()})
-        elif m_husband:
-            fields.append({"field_name": "భర్త పేరు", "value": m_husband.group(1).strip()})
-        else:
-            fields.append({"field_name": "తండ్రి / భర్త పేరు", "value": "Not Available"})
-            
-        # 6. House No
-        m_house = re.search(r'ఇంటి సంఖ్య\s*:\s*([^\n\r]+)', p)
-        house = m_house.group(1).strip() if m_house else "Not Available"
-        fields.append({"field_name": "ఇంటి సంఖ్య", "value": house})
-        
-        # 7. Voter ID
-        m_vid = re.search(r'ఓటరు ఐడి[\.\s]*కార్డు నెం\.[\s:]*([A-Za-z0-9]+)', p)
-        if not m_vid:
-            m_vid = re.search(r'\b([A-Z]{2,4}\d{6,8})\b', p)
-        vid = m_vid.group(1).strip() if m_vid else "Not Available"
-        fields.append({"field_name": "ఓటరు ఐడి కార్డు నెం.", "value": vid})
-        
-        # 8. Age
-        m_age = re.search(r'వయస్సు\s*:\s*(\d+)', p)
-        age = m_age.group(1).strip() if m_age else "Not Available"
-        fields.append({"field_name": "వయస్సు", "value": age})
-        
-        # 9. Gender
-        m_gen = re.search(r'లింగము\s*:\s*([^\n\r]+)', p)
-        gen = m_gen.group(1).strip() if m_gen else "Not Available"
-        if "స్" in gen or "స్త్రీ" in gen:
-            gen = "స్త్రీ"
-        elif "పు" in gen or "పురుషుడు" in gen:
-            gen = "పురుషుడు"
-        fields.append({"field_name": "లింగము", "value": gen})
-        
-        # 10. Source Page
-        fields.append({"field_name": "మూల PDF పుట", "value": str(page_no)})
-        
+        parsed = parse_voter_cell_text(p, page_no)
         records.append({
-            "record_id": int(sno) if sno.isdigit() else len(records) + 1,
+            "record_id": int(parsed["serial_no"]) if parsed["serial_no"].isdigit() else len(records) + 1,
             "page": page_no,
-            "title": f"ఓటరు రికార్డు {sno} (పుట {page_no})",
-            "fields": fields
+            "serial_no": parsed["serial_no"],
+            "electoral_roll_no": parsed["electoral_roll_no"],
+            "voter_name": parsed["voter_name"],
+            "relation_type": parsed["relation_type"],
+            "relation_name": parsed["relation_name"],
+            "house_no": parsed["house_no"],
+            "age": parsed["age"],
+            "gender": parsed["gender"],
+            "voter_id": parsed["voter_id"],
+            "block_bbox": None,
+            "photo_bbox": None,
+            "photo_path": None,
+            "image_matching_status": "MISSING",
+            "title": f"ఓటరు రికార్డు {parsed['serial_no']} (పుట {page_no})",
+            "fields": parsed["fields"]
         })
     return records
 
-def extract_structured_records(pages, tables):
-    """Extract all structured key-value records (e.g. voter records, tabular data, forms)
-    from pages while strictly preserving original Telugu Unicode text and numbers."""
+def extract_structured_records(pages, tables, doc=None, doc_id=None):
+    """
+    Extract all structured key-value records (e.g. voter records, tabular data, forms)
+    from pages while strictly preserving original Telugu Unicode text, numbers, and photos.
+    """
     records = []
+    doc_id = doc_id or "doc_" + uuid.uuid4().hex[:12]
     
-    # Check for voter list structure first
+    # Priority 1: High-Precision Spatial Voter Block & Photo Extraction
+    if doc is not None:
+        for p_idx in range(len(doc)):
+            page = doc[p_idx]
+            page_no = p_idx + 1
+            text = page.get_text("text") or ""
+            
+            is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య", "Sl.No", "S.No", "EPIC", "Voter", "voter"])
+            if is_voter_page:
+                cells = detect_voter_cells(page)
+                if cells:
+                    img_infos = page.get_image_info(xrefs=True)
+                    for c_idx, cell in enumerate(cells):
+                        raw_cell_text = page.get_text("text", clip=cell)
+                        parsed = parse_voter_cell_text(raw_cell_text, page_no)
+                        
+                        sno_val = parsed["serial_no"]
+                        rec_id = int(sno_val) if sno_val.isdigit() else (len(records) + 1)
+                        
+                        photo_meta = match_and_extract_voter_photo(
+                            doc, page, cell, page_no, sno_val, parsed["voter_id"], doc_id, img_infos
+                        )
+                        
+                        rec_dict = {
+                            "record_id": rec_id,
+                            "page": page_no,
+                            "serial_no": sno_val,
+                            "electoral_roll_no": parsed["electoral_roll_no"],
+                            "voter_name": parsed["voter_name"],
+                            "relation_type": parsed["relation_type"],
+                            "relation_name": parsed["relation_name"],
+                            "house_no": parsed["house_no"],
+                            "age": parsed["age"],
+                            "gender": parsed["gender"],
+                            "voter_id": parsed["voter_id"],
+                            "block_bbox": f"[{cell.x0:.1f},{cell.y0:.1f},{cell.x1:.1f},{cell.y1:.1f}]",
+                            "photo_bbox": f"[{photo_meta['photo_bbox'][0]:.1f},{photo_meta['photo_bbox'][1]:.1f},{photo_meta['photo_bbox'][2]:.1f},{photo_meta['photo_bbox'][3]:.1f}]" if photo_meta.get("photo_bbox") else None,
+                            "photo_path": photo_meta.get("photo_path"),
+                            "image_matching_status": photo_meta.get("status", "MISSING"),
+                            "title": f"ఓటరు రికార్డు {sno_val} (పుట {page_no})",
+                            "fields": parsed["fields"]
+                        }
+                        records.append(rec_dict)
+                        
+        if records:
+            return records
+
+    # Priority 2: Text-only voter block parsing fallback
     for p in pages:
         page_no = p.get("page", 1)
         text = p.get("text", "")
-        if "గ్రా" in text and "పం" in text and "ఓ" in text:
+        if any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు"]):
             v_recs = parse_voter_blocks(text, page_no)
             records.extend(v_recs)
             
     if records:
         return records
 
-    # General key-value and paragraph block parser for other documents
+    # Priority 3: General key-value and paragraph block parser for other documents
     rec_counter = 1
     pattern = r'(?:^|\s+)([A-Za-z\u0C00-\u0C7F\.\s\(\)\/]+?)\s*[:\-]\s*([^:\n]+?)(?=(?:\s+[A-Za-z\u0C00-\u0C7F\.\s\(\)\/]+?\s*[:\-])|$)'
     
@@ -228,9 +529,14 @@ def extract_structured_records(pages, tables):
                     fields.insert(0, {"field_name": "వరుస సంఖ్య", "value": first_num})
                     
             if fields:
+                s_val = next((f["value"] for f in fields if any(k in f["field_name"] for k in ["సంఖ్య", "సం", "Sl", "S.No"])), str(rec_counter))
+                v_val = next((f["value"] for f in fields if any(k in f["field_name"] for k in ["కార్డు", "గుర్తింపు", "ఐడి", "EPIC", "ID"])), "Not Available")
                 records.append({
                     "record_id": rec_counter,
                     "page": page_no,
+                    "serial_no": s_val,
+                    "voter_id": v_val,
+                    "image_matching_status": "MISSING",
                     "title": f"రికార్డు {rec_counter} (పేజీ {page_no})",
                     "fields": fields
                 })
@@ -247,6 +553,9 @@ def extract_structured_records(pages, tables):
                 records.append({
                     "record_id": rec_counter,
                     "page": page_no,
+                    "serial_no": str(rec_counter),
+                    "voter_id": "Not Available",
+                    "image_matching_status": "MISSING",
                     "title": f"టేబుల్ రికార్డు {rec_counter} (పేజీ {page_no})",
                     "fields": fields
                 })
@@ -254,27 +563,26 @@ def extract_structured_records(pages, tables):
                 
     return records
 
-def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None):
+def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None, doc_id=None):
     doc = fitz.open(stream=data, filetype="pdf")
     if doc.is_encrypted or not len(doc):
         raise ValueError("PDF is encrypted or contains no pages.")
         
+    doc_id = doc_id or "doc_" + uuid.uuid4().hex[:12]
     pages, tables, paras = [], [], []
     text_pages = ocr_pages = 0
     review_notes = [
         "All Telugu Unicode text, names, numbers and voter IDs strictly preserved.",
-        "Check extracted fields against source pages."
+        "Check extracted fields and photograph spatial bounds against source pages."
     ]
 
     ollama_url = ollama_url or settings.OLLAMA_BASE_URL
     model_name = model_name or settings.OLLAMA_MODEL
-    # If OLLAMA_ENABLED is false in settings, disable AI structuring completely
     if not settings.OLLAMA_ENABLED:
         use_ai = False
     elif use_ai is None:
         use_ai = settings.OLLAMA_ENABLED
 
-    # Pre-check Ollama connectivity once to prevent repeated hangs
     ollama_online = False
     if use_ai:
         try:
@@ -286,10 +594,6 @@ def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None):
         except Exception:
             review_notes.insert(0, f"Ollama is offline at {ollama_url}. Raw Telugu content extracted cleanly without AI.")
 
-    # Detect if PDF has voter records to skip redundant table analysis
-    has_voter_structure = False
-
-    # Open pdfplumber once for fast table extraction (only if not a pure voter list)
     pdf_plumber_doc = None
 
     try:
@@ -303,12 +607,8 @@ def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None):
                 method = "Embedded PDF text"
                 text_pages += 1
 
-                # Check if page is an electoral roll page
-                is_voter_page = ("గ్రా" in text and "పం" in text and "ఓ" in text)
-                if is_voter_page:
-                    has_voter_structure = True
+                is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "Sl.No", "S.No", "EPIC", "Voter", "voter"])
 
-                # Only extract digital tables if it is not a voter list page
                 if not is_voter_page:
                     if pdf_plumber_doc is None:
                         try:
@@ -332,7 +632,7 @@ def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None):
                         except Exception:
                             pass
             else:
-                # OCR for scanned pages
+                # Scanned PDF processing
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
                 text = clean(ocr(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")))
                 method = "Telugu + English OCR"
@@ -342,7 +642,6 @@ def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None):
                     
             pages.append({"page": i + 1, "method": method, "text": text})
 
-            # AI translation if Ollama is online
             if text and ollama_online:
                 try:
                     result = ai_structure(text, i + 1, ollama_url, model_name)
@@ -385,6 +684,10 @@ def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None):
                         "Telugu paragraph": p,
                         "English translation": ""
                     })
+
+        # Extract structured records using the live PyMuPDF document for spatial containment
+        records = extract_structured_records(pages, tables, doc=doc, doc_id=doc_id)
+
     finally:
         if pdf_plumber_doc:
             try:
@@ -406,7 +709,10 @@ def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None):
             })
 
     en = [{"Page": r["Page"], "Table": r["Table"], "Row": r["Row"], "English / Translation": r["English"]} for r in tables]
-    records = extract_structured_records(pages, tables)
+
+    matched_photos = sum(1 for r in records if r.get("image_matching_status") == "MATCHED")
+    missing_photos = sum(1 for r in records if r.get("image_matching_status") == "MISSING")
+    verification_photos = sum(1 for r in records if r.get("image_matching_status") == "NEEDS_VERIFICATION")
 
     return {
         "metadata": {
@@ -414,7 +720,10 @@ def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None):
             "page_count": len(pages),
             "text_pages": text_pages,
             "ocr_pages": ocr_pages,
-            "records_count": len(records)
+            "records_count": len(records),
+            "matched_photos_count": matched_photos,
+            "missing_photos_count": missing_photos,
+            "needs_verification_count": verification_photos
         },
         "pages": pages,
         "table_rows_te": tables,

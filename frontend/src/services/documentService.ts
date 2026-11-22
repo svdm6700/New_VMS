@@ -163,10 +163,16 @@ export const documentService = {
     area?: string;
     ward_number?: string;
     source_page?: number;
+    image_matching_status?: string;
     sort_by?: string;
     order?: string;
   }): Promise<VoterRecordsResponse> {
     const res = await api.get('/api/voter-records', { params });
+    return res.data;
+  },
+
+  async verifyVoterPhotoStatus(voterId: number, status: string, notes?: string): Promise<any> {
+    const res = await api.put(`/api/voters/${voterId}/verify-photo`, { status, notes });
     return res.data;
   },
 

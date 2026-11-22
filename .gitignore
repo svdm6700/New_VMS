@@ -43,3 +43,10 @@ backend/data/*.db
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Test & coverage artifacts
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+
