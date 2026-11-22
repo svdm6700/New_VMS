@@ -172,9 +172,7 @@ function AppLayout() {
           </Routes>
         </main>
 
-        <footer className="py-4 px-6 border-t border-slate-200/80 dark:border-slate-800 text-center text-xs text-slate-400">
-          VMS · Voter Management System · Smart Voter Data Extraction & Management · Role-Based Access Control (RBAC)
-        </footer>
+
       </div>
     </div>
   );

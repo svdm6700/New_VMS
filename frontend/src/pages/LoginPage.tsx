@@ -128,7 +128,7 @@ export const LoginPage: React.FC = () => {
         <div className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 sm:p-10 shadow-xl shadow-slate-200/50 dark:shadow-none">
           {/* Brand Header */}
           <div className="text-center mb-8">
-            <div className="w-14 h-14 bg-linear-to-tr from-brand-600 to-indigo-600 rounded-2xl flex items-center justify-center text-white mx-auto shadow-lg shadow-brand-500/25 mb-4 font-bold text-lg tracking-wider">
+            <div className="w-14 h-14 bg-gradient-to-tr from-brand-600 to-indigo-600 rounded-2xl flex items-center justify-center text-white mx-auto shadow-lg shadow-brand-500/25 mb-4 font-bold text-lg tracking-wider">
               VMS
             </div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 tracking-tight">

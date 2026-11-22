@@ -179,7 +179,7 @@ class VoterRecordUpdate(BaseModel):
 
 class VoterEntryCreate(BaseModel):
     voter_id: int
-    mobile_number: str
+    mobile_number: Optional[str] = ""
     amount: float
     entry_date: Optional[str] = None
     payment_method: Optional[str] = "Cash"
@@ -197,7 +197,7 @@ class VoterEntryUpdate(BaseModel):
 class PaymentCreateRequest(BaseModel):
     voter_id: int
     voter_entry_id: Optional[int] = None
-    mobile_number: str
+    mobile_number: Optional[str] = ""
     amount: float
     payment_date: Optional[str] = None
     payment_method: str = "Cash" # Cash, UPI, Bank Transfer, Other
@@ -1338,76 +1338,6 @@ def export_custom_body(body: ExportBody):
 # -------------------------------------------------------------
 # 13. Content Inspection Endpoints (Text, Tables, OCR)
 # -------------------------------------------------------------
-@app.get("/api/documents/{doc_id}/text")
-def get_document_text(doc_id: str, db: Session = Depends(get_db)):
-    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found.")
-    res_path = resolve_result_path(doc_id)
-    pages, paras = [], []
-    if res_path and res_path.exists():
-        try:
-            with open(res_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                pages = data.get("pages", [])
-                paras = data.get("paragraphs", [])
-        except Exception:
-            pass
-    return {
-        "id": doc_id,
-        "filename": doc.original_filename,
-        "pages": pages,
-        "paragraphs": paras
-    }
-
-@app.get("/api/documents/{doc_id}/tables")
-def get_document_tables(doc_id: str, db: Session = Depends(get_db)):
-    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found.")
-    res_path = resolve_result_path(doc_id)
-    tables_te, tables_en = [], []
-    if res_path and res_path.exists():
-        try:
-            with open(res_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                tables_te = data.get("table_rows_te", [])
-                tables_en = data.get("table_rows_en", [])
-        except Exception:
-            pass
-    return {
-        "id": doc_id,
-        "filename": doc.original_filename,
-        "tables_te": tables_te,
-        "tables_en": tables_en
-    }
-
-@app.get("/api/documents/{doc_id}/ocr")
-def get_document_ocr(doc_id: str, db: Session = Depends(get_db)):
-    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found.")
-    res_path = resolve_result_path(doc_id)
-    ocr_pages = []
-    validation = {}
-    if res_path and res_path.exists():
-        try:
-            with open(res_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                pages = data.get("pages", [])
-                ocr_pages = [p for p in pages if "OCR" in str(p.get("method", ""))]
-                validation = data.get("validation", {})
-        except Exception:
-            pass
-    return {
-        "id": doc_id,
-        "filename": doc.original_filename,
-        "ocr_page_count": len(ocr_pages),
-        "pages": ocr_pages,
-        "validation": validation
-    }
-
-# -------------------------------------------------------------
 # 14. Voter Search and Amount Entry Management
 # -------------------------------------------------------------
 
@@ -1524,12 +1454,14 @@ def create_voter_entry(
     if not voter:
         raise HTTPException(status_code=404, detail="Selected voter does not exist.")
 
-    # Validate mobile number (strip non-digits, ensure 10 digits)
-    clean_mobile = re.sub(r"\D", "", req.mobile_number)
-    if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
-        clean_mobile = clean_mobile[2:]
-    if len(clean_mobile) != 10:
-        raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
+    # Validate mobile number if provided (optional)
+    clean_mobile = ""
+    if req.mobile_number:
+        clean_mobile = re.sub(r"\D", "", req.mobile_number)
+        if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
+            clean_mobile = clean_mobile[2:]
+        if clean_mobile and len(clean_mobile) != 10:
+            raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
 
     # Validate amount
     if req.amount <= 0:
@@ -1569,6 +1501,48 @@ def create_voter_entry(
     db.commit()
     db.refresh(new_entry)
 
+    # Synchronize disbursement into Payments ledger
+    today_str = datetime.now().strftime("%Y%m%d")
+    unique_suffix = uuid.uuid4().hex[:6].upper()
+    now_utc = datetime.now(timezone.utc)
+    payment = PaymentModel(
+        transaction_id=f"TXN-{today_str}-{unique_suffix}",
+        receipt_number=f"RCP-{today_str}-{unique_suffix}",
+        voter_id=voter.id,
+        voter_entry_id=new_entry.id,
+        mobile_number=clean_mobile,
+        amount=req.amount,
+        payment_date=entry_d,
+        payment_method="Cash",
+        payment_status="Paid",
+        remarks=req.remarks.strip() if req.remarks else None,
+        created_by=current_user.id,
+        verified_by=current_user.id,
+        verified_at=now_utc,
+        created_at=now_utc,
+        updated_at=now_utc
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    audit = PaymentAuditLogModel(
+        payment_id=payment.id,
+        action="CREATED",
+        performed_by=current_user.id,
+        reason=f"Disbursement entry recorded via Voter Details & Entries for voter {voter.voter_id}.",
+        new_values={
+            "transaction_id": payment.transaction_id,
+            "voter_id": payment.voter_id,
+            "voter_entry_id": new_entry.id,
+            "amount": float(payment.amount),
+            "payment_status": "Paid",
+            "payment_method": "Cash"
+        }
+    )
+    db.add(audit)
+    db.commit()
+
     return {
         "status": "success",
         "message": "Voter entry saved successfully.",
@@ -1593,12 +1567,15 @@ def update_voter_entry(
         raise HTTPException(status_code=403, detail="You do not have permission to edit this entry.")
 
     if req.mobile_number is not None:
-        clean_mobile = re.sub(r"\D", "", req.mobile_number)
-        if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
-            clean_mobile = clean_mobile[2:]
-        if len(clean_mobile) != 10:
-            raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
-        entry.mobile_number = clean_mobile
+        if req.mobile_number.strip() == "":
+            entry.mobile_number = ""
+        else:
+            clean_mobile = re.sub(r"\D", "", req.mobile_number)
+            if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
+                clean_mobile = clean_mobile[2:]
+            if clean_mobile and len(clean_mobile) != 10:
+                raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
+            entry.mobile_number = clean_mobile
 
     if req.amount is not None:
         if req.amount <= 0:
@@ -1617,6 +1594,37 @@ def update_voter_entry(
     entry.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(entry)
+
+    # Sync update to linked Payment
+    linked_payment = db.query(PaymentModel).filter(PaymentModel.voter_entry_id == entry.id).first()
+    if linked_payment:
+        old_val = {
+            "amount": float(linked_payment.amount),
+            "mobile_number": linked_payment.mobile_number,
+            "payment_date": str(linked_payment.payment_date)
+        }
+        linked_payment.amount = entry.amount
+        linked_payment.mobile_number = entry.mobile_number
+        linked_payment.payment_date = entry.entry_date
+        linked_payment.remarks = entry.remarks
+        linked_payment.updated_by = current_user.id
+        linked_payment.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        audit = PaymentAuditLogModel(
+            payment_id=linked_payment.id,
+            action="UPDATED",
+            performed_by=current_user.id,
+            reason="Synchronized update from Voter Details & Entries modification.",
+            old_values=old_val,
+            new_values={
+                "amount": float(linked_payment.amount),
+                "mobile_number": linked_payment.mobile_number,
+                "payment_date": str(linked_payment.payment_date)
+            }
+        )
+        db.add(audit)
+        db.commit()
 
     return {
         "status": "success",
@@ -1639,6 +1647,11 @@ def delete_voter_entry(
 
     if current_user.role.lower() != "admin" and entry.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="You do not have permission to delete this entry.")
+
+    # Remove linked payment if exists
+    linked_payment = db.query(PaymentModel).filter(PaymentModel.voter_entry_id == entry.id).first()
+    if linked_payment:
+        db.delete(linked_payment)
 
     db.delete(entry)
     db.commit()
@@ -1873,23 +1886,24 @@ def get_monthly_collection_chart(
     today = datetime.now(timezone.utc).date()
     start_d = date(today.year - 1, today.month, 1)
 
+    m_col = func.date_trunc("month", PaymentModel.payment_date).label("month_d")
     records = (
         db.query(
-            func.to_char(PaymentModel.payment_date, 'YYYY-MM').label("month_str"),
+            m_col,
             func.coalesce(func.sum(PaymentModel.amount), 0).label("total_amount"),
             func.coalesce(func.sum(case((func.lower(PaymentModel.payment_status) == "paid", PaymentModel.amount), else_=0)), 0).label("paid_amount"),
             func.coalesce(func.sum(case((func.lower(PaymentModel.payment_status) == "pending", PaymentModel.amount), else_=0)), 0).label("pending_amount"),
             func.count(PaymentModel.id).label("count")
         )
         .filter(PaymentModel.payment_date >= start_d)
-        .group_by(func.to_char(PaymentModel.payment_date, 'YYYY-MM'))
-        .order_by(func.to_char(PaymentModel.payment_date, 'YYYY-MM').asc())
+        .group_by(m_col)
+        .order_by(m_col.asc())
         .all()
     )
 
     return [
         {
-            "month": r[0],
+            "month": r[0].strftime("%Y-%m") if hasattr(r[0], "strftime") else str(r[0])[:7],
             "total_amount": float(r[1] or 0.0),
             "paid_amount": float(r[2] or 0.0),
             "pending_amount": float(r[3] or 0.0),
@@ -2160,11 +2174,13 @@ def create_payment(
     if not voter:
         raise HTTPException(status_code=404, detail="Selected voter does not exist in the database.")
 
-    clean_mobile = re.sub(r"\D", "", req.mobile_number)
-    if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
-        clean_mobile = clean_mobile[2:]
-    if len(clean_mobile) != 10:
-        raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
+    clean_mobile = ""
+    if req.mobile_number:
+        clean_mobile = re.sub(r"\D", "", req.mobile_number)
+        if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
+            clean_mobile = clean_mobile[2:]
+        if clean_mobile and len(clean_mobile) != 10:
+            raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
 
     if req.amount <= 0:
         raise HTTPException(status_code=400, detail="Payment amount must be a positive number greater than zero.")
@@ -2639,14 +2655,19 @@ def update_payment(
     changes = []
 
     if req.mobile_number is not None:
-        clean_mobile = re.sub(r"\D", "", req.mobile_number)
-        if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
-            clean_mobile = clean_mobile[2:]
-        if len(clean_mobile) != 10:
-            raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
-        if payment.mobile_number != clean_mobile:
-            changes.append(f"mobile: {payment.mobile_number} -> {clean_mobile}")
-            payment.mobile_number = clean_mobile
+        if req.mobile_number.strip() == "":
+            if payment.mobile_number != "":
+                changes.append(f"mobile: {payment.mobile_number} -> (cleared)")
+                payment.mobile_number = ""
+        else:
+            clean_mobile = re.sub(r"\D", "", req.mobile_number)
+            if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
+                clean_mobile = clean_mobile[2:]
+            if clean_mobile and len(clean_mobile) != 10:
+                raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
+            if payment.mobile_number != clean_mobile:
+                changes.append(f"mobile: {payment.mobile_number} -> {clean_mobile}")
+                payment.mobile_number = clean_mobile
 
     if req.amount is not None:
         if req.amount <= 0:

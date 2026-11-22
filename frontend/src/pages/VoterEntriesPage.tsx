@@ -3,7 +3,6 @@ import { useSearchParams, Link } from 'react-router-dom';
 import {
   Search,
   User as UserIcon,
-  Phone,
   IndianRupee,
   Calendar,
   FileText,
@@ -60,8 +59,7 @@ export const VoterEntriesPage: React.FC = () => {
   const [selectedVoter, setSelectedVoter] = useState<VoterRecord | null>(null);
   const [isLoadingVoter, setIsLoadingVoter] = useState(false);
 
-  // Entry Form State
-  const [mobileNumber, setMobileNumber] = useState('');
+  // Amount Entry Form State
   const [amount, setAmount] = useState('');
   const [entryDate, setEntryDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [remarks, setRemarks] = useState('');
@@ -88,7 +86,6 @@ export const VoterEntriesPage: React.FC = () => {
   // Quick Payment Modal for this Voter
   const [showQuickPaymentModal, setShowQuickPaymentModal] = useState(false);
   const [quickPayAmount, setQuickPayAmount] = useState('');
-  const [quickPayMobile, setQuickPayMobile] = useState('');
   const [quickPayDate, setQuickPayDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [quickPayMethod, setQuickPayMethod] = useState('Cash');
   const [quickPayStatus, setQuickPayStatus] = useState('Paid');
@@ -104,7 +101,6 @@ export const VoterEntriesPage: React.FC = () => {
 
   // Edit Entry Modal State
   const [editingEntry, setEditingEntry] = useState<VoterEntry | null>(null);
-  const [editMobile, setEditMobile] = useState('');
   const [editAmount, setEditAmount] = useState('');
   const [editDate, setEditDate] = useState('');
   const [editRemarks, setEditRemarks] = useState('');
@@ -172,13 +168,6 @@ export const VoterEntriesPage: React.FC = () => {
     try {
       const voter = await voterEntryService.getVoterDetails(id);
       setSelectedVoter(voter);
-      if (voter.latest_mobile) {
-        setMobileNumber(voter.latest_mobile);
-        setQuickPayMobile(voter.latest_mobile);
-      } else {
-        setMobileNumber('');
-        setQuickPayMobile('');
-      }
       setAmount('');
       setRemarks('');
       setEntryDate(new Date().toISOString().split('T')[0]);
@@ -230,17 +219,11 @@ export const VoterEntriesPage: React.FC = () => {
     setEntries([]);
     setVoterPayments([]);
     setPaymentLedgerSummary(null);
-    setMobileNumber('');
     setAmount('');
     setRemarks('');
     setFormError(null);
     setFormSuccess(null);
     setSearchParams({});
-  };
-
-  const validateMobile = (mob: string): boolean => {
-    const cleaned = mob.replace(/\D/g, '');
-    return cleaned.length === 10;
   };
 
   const handleSubmitEntry = async (e: React.FormEvent) => {
@@ -250,12 +233,6 @@ export const VoterEntriesPage: React.FC = () => {
 
     if (!selectedVoter) {
       setFormError('Please select a voter first.');
-      return;
-    }
-
-    const cleanedMobile = mobileNumber.replace(/\D/g, '');
-    if (cleanedMobile.length !== 10) {
-      setFormError('Please enter a valid 10-digit mobile number (e.g. 9876543210).');
       return;
     }
 
@@ -269,7 +246,6 @@ export const VoterEntriesPage: React.FC = () => {
     try {
       await voterEntryService.createEntry({
         voter_id: selectedVoter.id,
-        mobile_number: cleanedMobile,
         amount: numAmount,
         entry_date: entryDate,
         remarks: remarks.trim() || undefined,
@@ -299,7 +275,6 @@ export const VoterEntriesPage: React.FC = () => {
   const handleOpenQuickPayment = () => {
     if (!selectedVoter) return;
     setQuickPayAmount('');
-    setQuickPayMobile(mobileNumber || selectedVoter.latest_mobile || '');
     setQuickPayDate(new Date().toISOString().split('T')[0]);
     setQuickPayMethod('Cash');
     setQuickPayStatus('Paid');
@@ -314,11 +289,6 @@ export const VoterEntriesPage: React.FC = () => {
     if (!selectedVoter) return;
     setQuickPayError(null);
 
-    const cleaned = quickPayMobile.replace(/\D/g, '');
-    if (cleaned.length !== 10) {
-      setQuickPayError('Please enter a valid 10-digit mobile number.');
-      return;
-    }
     const numAmt = parseFloat(quickPayAmount);
     if (isNaN(numAmt) || numAmt <= 0) {
       setQuickPayError('Amount must be greater than 0.');
@@ -329,7 +299,6 @@ export const VoterEntriesPage: React.FC = () => {
     try {
       await paymentService.createPayment({
         voter_id: selectedVoter.id,
-        mobile_number: cleaned,
         amount: numAmt,
         payment_date: quickPayDate,
         payment_method: quickPayMethod,
@@ -376,7 +345,6 @@ export const VoterEntriesPage: React.FC = () => {
 
   const handleOpenEdit = (entry: VoterEntry) => {
     setEditingEntry(entry);
-    setEditMobile(entry.mobile_number);
     setEditAmount(String(entry.amount));
     setEditDate(entry.entry_date);
     setEditRemarks(entry.remarks || '');
@@ -387,12 +355,6 @@ export const VoterEntriesPage: React.FC = () => {
     if (!editingEntry) return;
     setEditError(null);
 
-    const cleaned = editMobile.replace(/\D/g, '');
-    if (cleaned.length !== 10) {
-      setEditError('Mobile number must be 10 digits.');
-      return;
-    }
-
     const numAmt = parseFloat(editAmount);
     if (isNaN(numAmt) || numAmt <= 0) {
       setEditError('Amount must be greater than 0.');
@@ -402,7 +364,6 @@ export const VoterEntriesPage: React.FC = () => {
     setIsUpdating(true);
     try {
       await voterEntryService.updateEntry(editingEntry.id, {
-        mobile_number: cleaned,
         amount: numAmt,
         entry_date: editDate,
         remarks: editRemarks.trim() || undefined,
@@ -464,7 +425,7 @@ export const VoterEntriesPage: React.FC = () => {
   return (
     <div className="space-y-6 pb-12">
       {/* Header Banner */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 bg-linear-to-r from-brand-600 to-indigo-700 text-white rounded-3xl shadow-lg shadow-brand-500/10">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 bg-gradient-to-r from-brand-600 to-indigo-700 text-white rounded-3xl shadow-lg shadow-brand-500/10">
         <div>
           <div className="flex items-center gap-2 mb-1.5">
             <span className="p-1 bg-white/20 rounded-lg text-white">
@@ -478,7 +439,7 @@ export const VoterEntriesPage: React.FC = () => {
             Voter Details & Entry Management
           </h1>
           <p className="text-xs text-white/80 mt-1 font-telugu">
-            ఓటర్ వివరాల శోధన, మొబైల్ నంబర్, మొత్తం నమోదు & చెల్లింపుల లెడ్జర్
+            ఓటర్ వివరాల శోధన, మొత్తం నమోదు & చెల్లింపుల లెడ్జర్
           </p>
         </div>
 
@@ -486,7 +447,7 @@ export const VoterEntriesPage: React.FC = () => {
           {selectedVoter && (
             <button
               onClick={handleResetAll}
-              className="flex items-center gap-2 px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold backdrop-blur-md transition-all"
+              className="flex items-center gap-2 px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold backdrop-blur-sm transition-all"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>Search Another</span>
@@ -494,7 +455,7 @@ export const VoterEntriesPage: React.FC = () => {
           )}
           <Link
             to="/payments"
-            className="flex items-center gap-2 px-3.5 py-2 bg-white text-brand-700 hover:bg-white/90 rounded-xl text-xs font-bold shadow-xs transition-all"
+            className="flex items-center gap-2 px-3.5 py-2 bg-white text-brand-700 hover:bg-white/90 rounded-xl text-xs font-bold shadow-sm transition-all"
           >
             <Receipt className="w-3.5 h-3.5" />
             <span>Payments Dashboard</span>
@@ -517,7 +478,7 @@ export const VoterEntriesPage: React.FC = () => {
                 onFocus={() => {
                   if (searchResults.length > 0) setShowDropdown(true);
                 }}
-                placeholder="Search voter by EPIC / Voter ID, Full Name, Mobile, House No, Area..."
+                placeholder="Search voter by EPIC / Voter ID, Full Name, House No, Area..."
                 className="w-full pl-11 pr-10 py-3 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-2xl text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all font-telugu"
               />
               {searchQuery && (
@@ -711,7 +672,7 @@ export const VoterEntriesPage: React.FC = () => {
                 {/* Hero Header */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/60">
                   <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-2xl bg-linear-to-tr from-brand-600 to-indigo-600 text-white flex items-center justify-center font-bold text-base shadow-sm">
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-brand-600 to-indigo-600 text-white flex items-center justify-center font-bold text-base shadow-sm">
                       {selectedVoter.gender?.includes('స్త్రీ') || selectedVoter.gender?.toLowerCase() === 'female' ? 'F' : 'M'}
                     </div>
                     <div>
@@ -854,7 +815,7 @@ export const VoterEntriesPage: React.FC = () => {
           </div>
         </div>
 
-        {/* SECTION C: Mobile Number & Amount Entry Form */}
+        {/* SECTION C: Amount Entry Form (Phone number completely removed) */}
         <div className="lg:col-span-5">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-xs">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 mb-5">
@@ -863,7 +824,7 @@ export const VoterEntriesPage: React.FC = () => {
                   <IndianRupee className="w-4 h-4" />
                 </span>
                 <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                  New Amount Entry (నమోదు ఫారమ్)
+                  New Amount Entry (మొత్తం నమోదు ఫారమ్)
                 </h2>
               </div>
             </div>
@@ -934,7 +895,7 @@ export const VoterEntriesPage: React.FC = () => {
                   Remarks / Notes (రిమార్కులు - ఐచ్ఛికం)
                 </label>
                 <textarea
-                  rows={2}
+                  rows={3}
                   value={remarks}
                   disabled={!selectedVoter || isSubmitting}
                   onChange={(e) => setRemarks(e.target.value)}
@@ -947,7 +908,7 @@ export const VoterEntriesPage: React.FC = () => {
               <div className="pt-2 flex items-center gap-3">
                 <button
                   type="submit"
-                  disabled={!selectedVoter || isSubmitting || !validateMobile(mobileNumber) || !amount}
+                  disabled={!selectedVoter || isSubmitting || !amount || parseFloat(amount) <= 0}
                   className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
                 >
                   {isSubmitting ? (
@@ -989,10 +950,11 @@ export const VoterEntriesPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setActiveHistoryTab('entries')}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${activeHistoryTab === 'entries'
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  activeHistoryTab === 'entries'
                     ? 'bg-white dark:bg-slate-700 text-brand-600 dark:text-brand-300 shadow-xs'
                     : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200'
-                  }`}
+                }`}
               >
                 <FileText className="w-3.5 h-3.5" />
                 <span>Amount Entries ({entries.length})</span>
@@ -1000,10 +962,11 @@ export const VoterEntriesPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setActiveHistoryTab('payments')}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${activeHistoryTab === 'payments'
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  activeHistoryTab === 'payments'
                     ? 'bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 shadow-xs'
                     : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200'
-                  }`}
+                }`}
               >
                 <Receipt className="w-3.5 h-3.5" />
                 <span>Payment Transactions ({voterPayments.length})</span>
@@ -1044,7 +1007,7 @@ export const VoterEntriesPage: React.FC = () => {
             Select a voter record above to view their recorded entries and payment transactions.
           </div>
         ) : activeHistoryTab === 'entries' ? (
-          /* TAB 1: Raw Voter Amount Entries */
+          /* TAB 1: Raw Voter Amount Entries (Phone number removed) */
           entries.length === 0 ? (
             <div className="py-12 text-center">
               <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-400 mx-auto flex items-center justify-center mb-2">
@@ -1054,7 +1017,7 @@ export const VoterEntriesPage: React.FC = () => {
                 No amount entries recorded yet
               </p>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Fill in the form above to record the first mobile number and amount entry for this voter.
+                Fill in the form above to record the first amount entry for this voter.
               </p>
             </div>
           ) : (
@@ -1063,7 +1026,6 @@ export const VoterEntriesPage: React.FC = () => {
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400 font-semibold uppercase text-[10px] tracking-wider">
                     <th className="py-3 px-3">S.No.</th>
-                    <th className="py-3 px-3">Mobile Number</th>
                     <th className="py-3 px-3">Amount (₹)</th>
                     <th className="py-3 px-3">Entry Date</th>
                     <th className="py-3 px-3">Remarks</th>
@@ -1077,9 +1039,6 @@ export const VoterEntriesPage: React.FC = () => {
                     <tr key={entry.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
                       <td className="py-3 px-3 font-mono text-slate-400">
                         {index + 1}
-                      </td>
-                      <td className="py-3 px-3 font-mono font-semibold text-slate-800 dark:text-slate-200">
-                        {entry.mobile_number}
                       </td>
                       <td className="py-3 px-3 font-mono font-bold text-emerald-600 dark:text-emerald-400">
                         ₹{Number(entry.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
@@ -1185,14 +1144,15 @@ export const VoterEntriesPage: React.FC = () => {
                         </td>
                         <td className="py-3 px-3">
                           <span
-                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${isPaid
+                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                              isPaid
                                 ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200/50'
                                 : isPending
-                                  ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200/50'
-                                  : isRefunded
-                                    ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400 border border-purple-200/50'
-                                    : 'bg-slate-100 text-slate-600'
-                              }`}
+                                ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200/50'
+                                : isRefunded
+                                ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400 border border-purple-200/50'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
                           >
                             <span className="w-1.5 h-1.5 rounded-full bg-current" />
                             <span>{pay.payment_status}</span>
@@ -1223,7 +1183,7 @@ export const VoterEntriesPage: React.FC = () => {
 
       {/* QUICK PAYMENT MODAL FOR SELECTED VOTER */}
       {showQuickPaymentModal && selectedVoter && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
@@ -1262,39 +1222,20 @@ export const VoterEntriesPage: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveQuickPayment} className="mt-4 space-y-3.5 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Mobile */}
-                <div>
-                  <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">
-                    Mobile Number <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="tel"
-                    required
-                    maxLength={10}
-                    value={quickPayMobile}
-                    onChange={(e) => setQuickPayMobile(e.target.value.replace(/\D/g, ''))}
-                    placeholder="10-digit mobile"
-                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono text-slate-900 dark:text-slate-100"
-                  />
-                </div>
-
-                {/* Amount */}
-                <div>
-                  <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">
-                    Amount (₹) <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="1"
-                    required
-                    value={quickPayAmount}
-                    onChange={(e) => setQuickPayAmount(e.target.value)}
-                    placeholder="Enter amount"
-                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono font-bold text-slate-900 dark:text-slate-100"
-                  />
-                </div>
+              <div>
+                <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">
+                  Amount (₹) <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="1"
+                  required
+                  value={quickPayAmount}
+                  onChange={(e) => setQuickPayAmount(e.target.value)}
+                  placeholder="Enter amount"
+                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono font-bold text-slate-900 dark:text-slate-100"
+                />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -1397,7 +1338,7 @@ export const VoterEntriesPage: React.FC = () => {
 
       {/* OFFICIAL RECEIPT VOUCHER MODAL */}
       {viewReceiptPayment && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-2xl max-w-2xl w-full max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-3">
@@ -1518,7 +1459,7 @@ export const VoterEntriesPage: React.FC = () => {
                 </div>
 
                 {/* Financial Summary */}
-                <div className="p-4 rounded-xl bg-linear-to-r from-emerald-500/10 to-brand-500/10 border border-emerald-500/20 text-center">
+                <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-500/10 to-brand-500/10 border border-emerald-500/20 text-center">
                   <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
                     Amount Received / Disbursed
                   </span>
@@ -1543,7 +1484,7 @@ export const VoterEntriesPage: React.FC = () => {
 
       {/* Edit Entry Modal */}
       {editingEntry && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-2xl max-w-md w-full">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 mb-4">
               <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
@@ -1565,19 +1506,6 @@ export const VoterEntriesPage: React.FC = () => {
             )}
 
             <div className="space-y-3.5 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Mobile Number
-                </label>
-                <input
-                  type="tel"
-                  maxLength={10}
-                  value={editMobile}
-                  onChange={(e) => setEditMobile(e.target.value.replace(/\D/g, ''))}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono text-slate-900 dark:text-slate-100 focus:outline-none focus:border-brand-500"
-                />
-              </div>
-
               <div>
                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Amount (₹)
@@ -1640,7 +1568,7 @@ export const VoterEntriesPage: React.FC = () => {
 
       {/* Delete Confirmation Modal */}
       {deletingEntry && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-2xl max-w-sm w-full text-center">
             <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 mx-auto flex items-center justify-center mb-3">
               <ShieldAlert className="w-6 h-6" />
@@ -1649,7 +1577,7 @@ export const VoterEntriesPage: React.FC = () => {
               Confirm Delete Entry
             </h3>
             <p className="text-xs text-slate-500 mt-1">
-              Are you sure you want to delete entry of <strong className="font-mono text-slate-700 dark:text-slate-300">₹{deletingEntry.amount}</strong> for mobile <strong className="font-mono text-slate-700 dark:text-slate-300">{deletingEntry.mobile_number}</strong>?
+              Are you sure you want to delete entry of <strong className="font-mono text-slate-700 dark:text-slate-300">₹{deletingEntry.amount}</strong> for voter <strong className="text-slate-700 dark:text-slate-300">{selectedVoter?.voter_name}</strong>?
             </p>
 
             <div className="pt-5 flex items-center gap-2">

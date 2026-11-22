@@ -150,19 +150,4 @@ export const documentService = {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
   },
-
-  async getDocumentText(id: string): Promise<any> {
-    const res = await api.get(`/api/documents/${id}/text`);
-    return res.data;
-  },
-
-  async getDocumentTables(id: string): Promise<any> {
-    const res = await api.get(`/api/documents/${id}/tables`);
-    return res.data;
-  },
-
-  async getDocumentOcr(id: string): Promise<any> {
-    const res = await api.get(`/api/documents/${id}/ocr`);
-    return res.data;
-  },
 };

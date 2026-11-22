@@ -49,8 +49,6 @@ export const Settings: React.FC = () => {
   const [testingHealth, setTestingHealth] = useState(false);
   const [healthResult, setHealthResult] = useState<{ status: string; timestamp?: string } | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
-  const [defaultZoom, setDefaultZoom] = useState('100');
-  const [defaultLang, setDefaultLang] = useState('tel+eng');
 
   // RBAC Roles State
   const [roles, setRoles] = useState<Role[]>([]);
@@ -311,11 +309,10 @@ export const Settings: React.FC = () => {
         <div className="flex items-center p-1 bg-slate-200/70 dark:bg-slate-800/80 rounded-2xl text-xs font-semibold">
           <button
             onClick={() => setActiveTab('general')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl transition-all ${
-              activeTab === 'general'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl transition-all ${activeTab === 'general'
                 ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow-xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
+              }`}
           >
             <Sliders className="w-3.5 h-3.5" />
             <span>General</span>
@@ -323,11 +320,10 @@ export const Settings: React.FC = () => {
 
           <button
             onClick={() => setActiveTab('roles')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl transition-all ${
-              activeTab === 'roles'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl transition-all ${activeTab === 'roles'
                 ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow-xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
+              }`}
           >
             <Shield className="w-3.5 h-3.5" />
             <span>Roles & Permissions</span>
@@ -335,11 +331,10 @@ export const Settings: React.FC = () => {
 
           <button
             onClick={() => setActiveTab('users')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl transition-all ${
-              activeTab === 'users'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl transition-all ${activeTab === 'users'
                 ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow-xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
+              }`}
           >
             <Users className="w-3.5 h-3.5" />
             <span>Assigned Users</span>
@@ -347,11 +342,10 @@ export const Settings: React.FC = () => {
 
           <button
             onClick={() => setActiveTab('audit')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl transition-all ${
-              activeTab === 'audit'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl transition-all ${activeTab === 'audit'
                 ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow-xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
+              }`}
           >
             <FileText className="w-3.5 h-3.5" />
             <span>Audit Logs</span>
@@ -372,11 +366,10 @@ export const Settings: React.FC = () => {
             <div className="grid grid-cols-3 gap-3">
               <button
                 onClick={() => setTheme('light')}
-                className={`flex flex-col items-center gap-2.5 p-4 rounded-2xl border text-xs font-semibold transition-all ${
-                  theme === 'light'
+                className={`flex flex-col items-center gap-2.5 p-4 rounded-2xl border text-xs font-semibold transition-all ${theme === 'light'
                     ? 'border-brand-500 bg-brand-50/50 dark:bg-brand-950/40 text-brand-700 dark:text-brand-300 shadow-xs'
                     : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
-                }`}
+                  }`}
               >
                 <Sun className="w-5 h-5 text-amber-500" />
                 <span>Light Mode</span>
@@ -384,11 +377,10 @@ export const Settings: React.FC = () => {
 
               <button
                 onClick={() => setTheme('dark')}
-                className={`flex flex-col items-center gap-2.5 p-4 rounded-2xl border text-xs font-semibold transition-all ${
-                  theme === 'dark'
+                className={`flex flex-col items-center gap-2.5 p-4 rounded-2xl border text-xs font-semibold transition-all ${theme === 'dark'
                     ? 'border-brand-500 bg-brand-50/50 dark:bg-brand-950/40 text-brand-700 dark:text-brand-300 shadow-xs'
                     : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
-                }`}
+                  }`}
               >
                 <Moon className="w-5 h-5 text-indigo-400" />
                 <span>Dark Mode</span>
@@ -396,11 +388,10 @@ export const Settings: React.FC = () => {
 
               <button
                 onClick={() => setTheme('system')}
-                className={`flex flex-col items-center gap-2.5 p-4 rounded-2xl border text-xs font-semibold transition-all ${
-                  theme === 'system'
+                className={`flex flex-col items-center gap-2.5 p-4 rounded-2xl border text-xs font-semibold transition-all ${theme === 'system'
                     ? 'border-brand-500 bg-brand-50/50 dark:bg-brand-950/40 text-brand-700 dark:text-brand-300 shadow-xs'
                     : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
-                }`}
+                  }`}
               >
                 <Monitor className="w-5 h-5 text-slate-400" />
                 <span>System Default</span>
@@ -416,11 +407,10 @@ export const Settings: React.FC = () => {
                 <p className="text-xs text-slate-400">Database Engine: PostgreSQL 16+ (psycopg 3)</p>
               </div>
               <span
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border ${
-                  backendOnline
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border ${backendOnline
                     ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border-emerald-200'
                     : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-200'
-                }`}
+                  }`}
               >
                 <span className={`w-2 h-2 rounded-full ${backendOnline ? 'bg-emerald-500' : 'bg-rose-500'}`} />
                 {backendOnline ? 'Operational' : 'Disconnected'}
@@ -457,64 +447,6 @@ export const Settings: React.FC = () => {
               </div>
             )}
           </div>
-
-          {/* Reader & Processing Preferences */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Document Defaults</h3>
-              <p className="text-xs text-slate-400">Telugu voter records display preferences</p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  Default PDF Zoom
-                </label>
-                <select
-                  value={defaultZoom}
-                  onChange={(e) => setDefaultZoom(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100"
-                >
-                  <option value="75">75%</option>
-                  <option value="100">100% (Fit width)</option>
-                  <option value="125">125%</option>
-                  <option value="150">150%</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  Default OCR Language
-                </label>
-                <select
-                  value={defaultLang}
-                  onChange={(e) => setDefaultLang(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100"
-                >
-                  <option value="tel+eng">Telugu + English (tel+eng)</option>
-                  <option value="tel">Telugu only (tel)</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {/* About Info Card */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-xs">
-            <div className="flex items-start gap-3">
-              <div className="p-2.5 rounded-xl bg-brand-50 dark:bg-brand-950 text-brand-600 dark:text-brand-400 font-bold text-xs">
-                VMS
-              </div>
-              <div className="space-y-1 text-xs">
-                <h4 className="font-bold text-slate-900 dark:text-slate-100">VMS – Voter Management System</h4>
-                <p className="text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Version 2.0.0 Enterprise • PostgreSQL 16+ Database • FastAPI Backend • React 18 & Vite • Role-Based Access Control (RBAC)
-                </p>
-                <p className="text-[11px] text-slate-400 pt-1 font-telugu">
-                  ఓటర్ మేనేజ్‌మెంట్ సిస్టమ్ — స్మార్ట్ ఓటర్ డేటా ఎక్స్‌ట్రాక్షన్ & మేనేజ్‌మెంట్
-                </p>
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
@@ -522,7 +454,7 @@ export const Settings: React.FC = () => {
       {activeTab === 'roles' && (
         <div className="space-y-6">
           {/* Top Info Banner */}
-          <div className="bg-linear-to-r from-brand-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800/80 border border-brand-200/60 dark:border-slate-800 rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="bg-gradient-to-r from-brand-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800/80 border border-brand-200/60 dark:border-slate-800 rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-brand-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">
                 <Shield className="w-5 h-5" />
@@ -576,11 +508,10 @@ export const Settings: React.FC = () => {
                       <div
                         key={r.id}
                         onClick={() => setSelectedRole(r)}
-                        className={`p-3.5 rounded-2xl border cursor-pointer transition-all ${
-                          isSelected
+                        className={`p-3.5 rounded-2xl border cursor-pointer transition-all ${isSelected
                             ? 'bg-brand-50/70 dark:bg-brand-950/40 border-brand-500 dark:border-brand-600 shadow-xs'
                             : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
-                        }`}
+                          }`}
                       >
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs font-bold text-slate-900 dark:text-slate-100 capitalize">
@@ -734,11 +665,10 @@ export const Settings: React.FC = () => {
                               return (
                                 <label
                                   key={perm.code}
-                                  className={`flex items-start gap-2.5 p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
-                                    isChecked
+                                  className={`flex items-start gap-2.5 p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${isChecked
                                       ? 'bg-white dark:bg-slate-800 border-brand-200 dark:border-brand-900 shadow-2xs'
                                       : 'bg-white/60 dark:bg-slate-900/40 border-slate-200/80 dark:border-slate-800 text-slate-500'
-                                  } ${isRoleAdmin ? 'cursor-not-allowed opacity-90' : ''}`}
+                                    } ${isRoleAdmin ? 'cursor-not-allowed opacity-90' : ''}`}
                                 >
                                   <input
                                     type="checkbox"
@@ -835,24 +765,22 @@ export const Settings: React.FC = () => {
                       <td className="py-3.5 px-4 text-slate-600 dark:text-slate-400">{u.email}</td>
                       <td className="py-3.5 px-4">
                         <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                            u.role === 'admin'
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${u.role === 'admin'
                               ? 'bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300'
                               : u.role === 'operator'
-                              ? 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
-                              : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-                          }`}
+                                ? 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                            }`}
                         >
                           {u.role}
                         </span>
                       </td>
                       <td className="py-3.5 px-4">
                         <span
-                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                            u.is_active
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${u.is_active
                               ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
                               : 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300'
-                          }`}
+                            }`}
                         >
                           <span className={`w-1.5 h-1.5 rounded-full ${u.is_active ? 'bg-emerald-500' : 'bg-rose-500'}`} />
                           {u.is_active ? 'Active' : 'Disabled'}

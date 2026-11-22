@@ -64,7 +64,7 @@ def run_tests():
     print(f"✓ [Location Metrics] Districts: {len(loc['districts'])}, Constituencies: {len(loc['constituencies'])}")
 
     # 7. Search Voter for Payment
-    q_enc = urllib.parse.quote("కంచుమిల్లి")
+    q_enc = urllib.parse.quote("అందే")
     req = urllib.request.Request(f"{BASE_URL}/api/payments/voters/search?q={q_enc}", headers=headers)
     with urllib.request.urlopen(req) as resp:
         voters = json.loads(resp.read().decode())

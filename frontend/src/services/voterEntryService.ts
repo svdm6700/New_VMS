@@ -29,7 +29,7 @@ export interface VoterRecord {
 export interface VoterEntry {
   id: number;
   voter_id: number;
-  mobile_number: string;
+  mobile_number?: string;
   amount: number;
   entry_date: string;
   remarks: string;
@@ -59,7 +59,7 @@ export interface VoterEntriesResponse {
 
 export interface CreateEntryPayload {
   voter_id: number;
-  mobile_number: string;
+  mobile_number?: string;
   amount: number;
   entry_date?: string;
   remarks?: string;

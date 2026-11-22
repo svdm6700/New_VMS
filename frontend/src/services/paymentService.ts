@@ -88,7 +88,7 @@ export interface PaymentsResponse {
 export interface CreatePaymentPayload {
   voter_id: number;
   voter_entry_id?: number;
-  mobile_number: string;
+  mobile_number?: string;
   amount: number;
   payment_date?: string;
   payment_method: string;
