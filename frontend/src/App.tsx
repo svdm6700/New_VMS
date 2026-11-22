@@ -131,11 +131,11 @@ function AppLayout() {
             <Route path="/admin/roles" element={<Navigate to="/admin/users?tab=roles" replace />} />
             <Route path="/roles" element={<Navigate to="/admin/users?tab=roles" replace />} />
 
-            {/* Geographic Master Management (Super Admin Exclusive) */}
+            {/* Geographic Master Management & Assignments */}
             <Route
               path="/constituency-management"
               element={
-                <ProtectedRoute allowedRoles={['super_admin']}>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <ConstituencyManagement />
                 </ProtectedRoute>
               }
@@ -144,15 +144,13 @@ function AppLayout() {
               path="/ward-management"
               element={<Navigate to="/constituency-management?tab=wards" replace />}
             />
-
-            {/* User Geographic Assignments (Super Admin & Admin) */}
             <Route
               path="/user-assignments"
-              element={
-                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
-                  <UserAssignmentsPage />
-                </ProtectedRoute>
-              }
+              element={<Navigate to="/constituency-management?tab=assignments" replace />}
+            />
+            <Route
+              path="/geographic-assignments"
+              element={<Navigate to="/constituency-management?tab=assignments" replace />}
             />
 
             {/* Document Management (Super Admin & Admin Only) */}

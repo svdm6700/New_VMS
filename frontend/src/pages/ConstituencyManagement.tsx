@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Building2,
@@ -16,38 +16,87 @@ import {
   FolderTree,
   ChevronRight,
   ChevronDown,
-  ArrowRight
+  ArrowRight,
+  UserCheck,
+  User as UserIcon,
+  ToggleLeft,
+  ToggleRight,
+  X,
+  Filter
 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 import { geoService, District, Constituency, Ward } from '../services/geoService';
+import { authService } from '../services/authService';
+import { GeographicAssignment } from '../types/wallet';
+import { User } from '../types/auth';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
 
-type TabType = 'constituencies' | 'wards' | 'hierarchy';
+export type TabType = 'assignments' | 'constituencies' | 'wards' | 'hierarchy';
 
 export const ConstituencyManagement: React.FC = () => {
+  const { isSuperAdmin, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialTab = (searchParams.get('tab') as TabType) || 'constituencies';
+
+  // Tab initialization: default to 'assignments'
+  const tabParam = searchParams.get('tab') as TabType;
+  const initialTab: TabType =
+    tabParam && ['assignments', 'constituencies', 'wards', 'hierarchy'].includes(tabParam)
+      ? tabParam
+      : 'assignments';
   const initialConstituency = searchParams.get('constituency') || 'all';
 
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
   const [districts, setDistricts] = useState<District[]>([]);
   const [constituencies, setConstituencies] = useState<Constituency[]>([]);
   const [wards, setWards] = useState<Ward[]>([]);
+  const [assignments, setAssignments] = useState<GeographicAssignment[]>([]);
+  const [candidateUsers, setCandidateUsers] = useState<User[]>([]);
+  const [locations, setLocations] = useState<{ districts: string[]; constituencies: string[]; wards: string[] }>({
+    districts: [],
+    constituencies: [],
+    wards: [],
+  });
+
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Search & Filter state for Constituencies tab
+  // ---------------------------------------------------------------------------
+  // User Assignments State
+  // ---------------------------------------------------------------------------
+  const [assignSearch, setAssignSearch] = useState<string>('');
+  const [assignConstituencyFilter, setAssignConstituencyFilter] = useState<string>('all');
+  const [assignStatusFilter, setAssignStatusFilter] = useState<string>('all');
+  const [showAssignModal, setShowAssignModal] = useState<boolean>(false);
+  const [assignFormLoading, setAssignFormLoading] = useState<boolean>(false);
+  const [assignmentForm, setAssignmentForm] = useState<{
+    user_id: number;
+    district: string;
+    constituency: string;
+    wardsInput: string;
+    area: string;
+    status: 'ACTIVE' | 'INACTIVE';
+  }>({
+    user_id: 0,
+    district: '',
+    constituency: '',
+    wardsInput: '',
+    area: '',
+    status: 'ACTIVE',
+  });
+
+  // ---------------------------------------------------------------------------
+  // Constituencies & Wards State
+  // ---------------------------------------------------------------------------
   const [cSearch, setCSearch] = useState<string>('');
   const [selectedDistrictFilter, setSelectedDistrictFilter] = useState<string>('all');
-
-  // Search & Filter state for Wards tab
   const [wSearch, setWSearch] = useState<string>('');
   const [selectedConstituencyFilter, setSelectedConstituencyFilter] = useState<string>(initialConstituency);
 
-  // Hierarchy view expand/collapse state
+  // Hierarchy expand/collapse
   const [expandedDistricts, setExpandedDistricts] = useState<Record<number, boolean>>({});
   const [expandedConstituencies, setExpandedConstituencies] = useState<Record<number, boolean>>({});
 
-  // Modals state
+  // Master Modals
   const [showDistrictModal, setShowDistrictModal] = useState<boolean>(false);
   const [districtForm, setDistrictForm] = useState<{ id?: number; name: string; code: string; state: string }>({
     name: '',
@@ -85,9 +134,9 @@ export const ConstituencyManagement: React.FC = () => {
 
   // Sync tab with URL
   useEffect(() => {
-    const tabParam = searchParams.get('tab') as TabType;
-    if (tabParam && ['constituencies', 'wards', 'hierarchy'].includes(tabParam)) {
-      setActiveTab(tabParam);
+    const currentTab = searchParams.get('tab') as TabType;
+    if (currentTab && ['assignments', 'constituencies', 'wards', 'hierarchy'].includes(currentTab)) {
+      setActiveTab(currentTab);
     }
     const cParam = searchParams.get('constituency');
     if (cParam) {
@@ -105,40 +154,145 @@ export const ConstituencyManagement: React.FC = () => {
     setSearchParams(newParams);
   };
 
-  const fetchData = async () => {
+  // ---------------------------------------------------------------------------
+  // Load Master and Assignment Data
+  // ---------------------------------------------------------------------------
+  const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [dList, cList, wList] = await Promise.all([
+      const [dList, cList, wList, assigns, locs, usersResp] = await Promise.all([
         geoService.getDistricts(),
         geoService.getConstituencies(),
         geoService.getWards(),
+        geoService.getUserAssignments().catch(() => []),
+        geoService.getLocations().catch(() => ({ districts: [], constituencies: [], wards: [] })),
+        authService.getUsers({ limit: 100 }).catch(() => ({ users: [], total: 0 })),
       ]);
-      setDistricts(dList);
-      setConstituencies(cList);
-      setWards(wList);
 
-      // Default expand first district & constituency in hierarchy
-      if (dList.length > 0) {
-        setExpandedDistricts({ [dList[0].id]: true });
+      setDistricts(dList || []);
+      setConstituencies(cList || []);
+      setWards(wList || []);
+      setAssignments(assigns || []);
+      setLocations(locs || { districts: [], constituencies: [], wards: [] });
+
+      const candidateList = (usersResp.users || []).filter((u: User) => {
+        if (isSuperAdmin) {
+          return u.role.toLowerCase() !== 'super_admin' && u.role.toLowerCase() !== 'superadmin';
+        }
+        return u.role.toLowerCase() === 'user';
+      });
+      setCandidateUsers(candidateList);
+
+      if (dList && dList.length > 0) {
+        setExpandedDistricts((prev) => (Object.keys(prev).length === 0 ? { [dList[0].id]: true } : prev));
       }
-      if (cList.length > 0) {
-        setExpandedConstituencies({ [cList[0].id]: true });
+      if (cList && cList.length > 0) {
+        setExpandedConstituencies((prev) => (Object.keys(prev).length === 0 ? { [cList[0].id]: true } : prev));
       }
     } catch (err: any) {
       setMessage({
         type: 'error',
-        text: err?.response?.data?.detail || 'Failed to load master geographic data.',
+        text: err?.response?.data?.detail || 'Failed to load geographic and assignment data.',
       });
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [isSuperAdmin]);
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [fetchData]);
 
-  // District Actions
+  // ---------------------------------------------------------------------------
+  // User Assignments Handlers
+  // ---------------------------------------------------------------------------
+  const handleCreateAssignment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!assignmentForm.user_id) {
+      alert('Please select a user to assign.');
+      return;
+    }
+    if (!assignmentForm.district.trim() || !assignmentForm.constituency.trim()) {
+      alert('Please provide District and Constituency.');
+      return;
+    }
+
+    setAssignFormLoading(true);
+    try {
+      const parsedWards = assignmentForm.wardsInput
+        .split(',')
+        .map((w) => w.trim())
+        .filter((w) => w.length > 0);
+
+      await geoService.createUserAssignment({
+        user_id: assignmentForm.user_id,
+        district: assignmentForm.district.trim(),
+        constituency: assignmentForm.constituency.trim(),
+        wards: parsedWards.length > 0 ? parsedWards : ['ALL'],
+        area: assignmentForm.area.trim() || undefined,
+        status: assignmentForm.status,
+      });
+
+      setMessage({ type: 'success', text: 'Geographic territory assignment created successfully.' });
+      setShowAssignModal(false);
+      setAssignmentForm({
+        user_id: 0,
+        district: '',
+        constituency: '',
+        wardsInput: '',
+        area: '',
+        status: 'ACTIVE',
+      });
+      fetchData();
+    } catch (err: any) {
+      setMessage({
+        type: 'error',
+        text: err?.response?.data?.detail || 'Failed to create assignment.',
+      });
+    } finally {
+      setAssignFormLoading(false);
+    }
+  };
+
+  const handleToggleAssignmentStatus = async (item: GeographicAssignment) => {
+    const newStatus = item.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    try {
+      await geoService.updateUserAssignment(item.id, { status: newStatus });
+      setMessage({
+        type: 'success',
+        text: `Assignment status for '${item.user_username || item.user_full_name}' changed to ${newStatus}.`,
+      });
+      fetchData();
+    } catch (err: any) {
+      setMessage({
+        type: 'error',
+        text: err?.response?.data?.detail || 'Failed to update assignment status.',
+      });
+    }
+  };
+
+  const handleDeleteAssignment = async (item: GeographicAssignment) => {
+    if (
+      !window.confirm(
+        `Are you sure you want to remove geographic assignment for '${item.user_username || item.user_full_name}'?`
+      )
+    )
+      return;
+    try {
+      await geoService.deleteUserAssignment(item.id);
+      setMessage({ type: 'success', text: 'Geographic assignment removed.' });
+      fetchData();
+    } catch (err: any) {
+      setMessage({
+        type: 'error',
+        text: err?.response?.data?.detail || 'Failed to delete assignment.',
+      });
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // District Handlers
+  // ---------------------------------------------------------------------------
   const handleSaveDistrict = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!districtForm.name.trim()) return;
@@ -174,7 +328,9 @@ export const ConstituencyManagement: React.FC = () => {
     }
   };
 
-  // Constituency Actions
+  // ---------------------------------------------------------------------------
+  // Constituency Handlers
+  // ---------------------------------------------------------------------------
   const handleSaveConstituency = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!constituencyForm.name.trim() || !constituencyForm.district_name.trim()) {
@@ -208,7 +364,9 @@ export const ConstituencyManagement: React.FC = () => {
     }
   };
 
-  // Ward Actions
+  // ---------------------------------------------------------------------------
+  // Ward Handlers
+  // ---------------------------------------------------------------------------
   const handleSaveWard = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!wardForm.ward_number.trim() || !wardForm.constituency_name.trim()) {
@@ -248,7 +406,23 @@ export const ConstituencyManagement: React.FC = () => {
     }
   };
 
-  // Filters
+  // ---------------------------------------------------------------------------
+  // Filtered Lists
+  // ---------------------------------------------------------------------------
+  const filteredAssignments = assignments.filter((a) => {
+    const matchesConstituency =
+      assignConstituencyFilter === 'all' || a.constituency === assignConstituencyFilter;
+    const matchesStatus =
+      assignStatusFilter === 'all' || a.status.toUpperCase() === assignStatusFilter.toUpperCase();
+    const matchesSearch =
+      (a.user_username && a.user_username.toLowerCase().includes(assignSearch.toLowerCase())) ||
+      (a.user_full_name && a.user_full_name.toLowerCase().includes(assignSearch.toLowerCase())) ||
+      a.constituency.toLowerCase().includes(assignSearch.toLowerCase()) ||
+      a.district.toLowerCase().includes(assignSearch.toLowerCase()) ||
+      (a.area && a.area.toLowerCase().includes(assignSearch.toLowerCase()));
+    return matchesConstituency && matchesStatus && matchesSearch;
+  });
+
   const filteredConstituencies = constituencies.filter((c) => {
     const matchesSearch =
       c.name.toLowerCase().includes(cSearch.toLowerCase()) ||
@@ -268,82 +442,113 @@ export const ConstituencyManagement: React.FC = () => {
     return matchesFilter && matchesSearch;
   });
 
+  const activeAssignmentsCount = assignments.filter((a) => a.status === 'ACTIVE').length;
   const constituenciesWithWardsCount = new Set(wards.map((w) => w.constituency_name)).size;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-in fade-in">
       {/* Unified Master Header Banner */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-200 dark:border-amber-900 flex items-center gap-1">
+            <span
+              className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+                isSuperAdmin
+                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-200 dark:border-amber-900'
+                  : 'bg-brand-50 text-brand-600 dark:bg-brand-950/40 dark:text-brand-400 border border-brand-200 dark:border-brand-900'
+              }`}
+            >
               <Shield className="w-3 h-3" />
-              Super Admin Master Control
+              {isSuperAdmin ? 'Super Admin Master Control' : 'Admin Delegated Jurisdiction'}
             </span>
           </div>
           <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2.5">
             <Building2 className="w-6 h-6 text-brand-600 dark:text-brand-400" />
-            <span>Constituency & Ward Management</span>
+            <span>Geographic Management & Assignments</span>
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Authoritative master catalog of Districts, Assembly Constituencies, Electoral Wards, and Localities.
+            Authoritative master catalog of Districts, Assembly Constituencies, Electoral Wards, and Field User Assignments.
           </p>
         </div>
 
-        {/* Global Action Buttons */}
+        {/* Global Contextual Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={fetchData}
-            title="Refresh Data"
+            title="Refresh Geographic and Assignment Data"
             disabled={isLoading}
             className="p-2 text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-all"
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </button>
 
+          {/* New Assignment Button */}
           <button
             onClick={() => {
-              setDistrictForm({ name: '', code: '', state: 'Andhra Pradesh' });
-              setShowDistrictModal(true);
-            }}
-            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add District</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setConstituencyForm({
-                name: '',
-                code: '',
-                district_id: districts[0]?.id,
-                district_name: districts[0]?.name || '',
+              setAssignmentForm({
+                user_id: candidateUsers[0]?.id || 0,
+                district: locations.districts[0] || (districts[0]?.name || ''),
+                constituency: locations.constituencies[0] || (constituencies[0]?.name || ''),
+                wardsInput: '',
+                area: '',
+                status: 'ACTIVE',
               });
-              setShowConstituencyModal(true);
-            }}
-            className="px-3.5 py-2 bg-brand-50 hover:bg-brand-100 dark:bg-brand-950/50 dark:hover:bg-brand-900/60 text-brand-700 dark:text-brand-300 border border-brand-200/60 dark:border-brand-800/60 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
-          >
-            <Plus className="w-3.5 h-3.5 text-brand-600" />
-            <span>Add Constituency</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setWardForm({
-                ward_number: '',
-                constituency_name: constituencies[0]?.name || '',
-                constituency_id: constituencies[0]?.id,
-                area_name: '',
-                description: '',
-              });
-              setShowWardModal(true);
+              setShowAssignModal(true);
             }}
             className="px-3.5 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm shadow-brand-500/20 transition-all"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add Ward</span>
+            <UserCheck className="w-3.5 h-3.5" />
+            <span>New Assignment</span>
           </button>
+
+          {/* Super Admin Master Buttons */}
+          {isSuperAdmin && (
+            <>
+              <button
+                onClick={() => {
+                  setDistrictForm({ name: '', code: '', state: 'Andhra Pradesh' });
+                  setShowDistrictModal(true);
+                }}
+                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add District</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setConstituencyForm({
+                    name: '',
+                    code: '',
+                    district_id: districts[0]?.id,
+                    district_name: districts[0]?.name || '',
+                  });
+                  setShowConstituencyModal(true);
+                }}
+                className="px-3.5 py-2 bg-brand-50 hover:bg-brand-100 dark:bg-brand-950/50 dark:hover:bg-brand-900/60 text-brand-700 dark:text-brand-300 border border-brand-200/60 dark:border-brand-800/60 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
+              >
+                <Plus className="w-3.5 h-3.5 text-brand-600" />
+                <span>Add Constituency</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setWardForm({
+                    ward_number: '',
+                    constituency_name: constituencies[0]?.name || '',
+                    constituency_id: constituencies[0]?.id,
+                    area_name: '',
+                    description: '',
+                  });
+                  setShowWardModal(true);
+                }}
+                className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800/60 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
+              >
+                <Plus className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Add Ward</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -370,8 +575,19 @@ export const ConstituencyManagement: React.FC = () => {
         </div>
       )}
 
-      {/* Key Metric Overview Cards */}
+      {/* Top Metric Overview Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">User Assignments</span>
+            <UserCheck className="w-4 h-4 text-purple-600" />
+          </div>
+          <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">{assignments.length}</p>
+          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold mt-0.5">
+            {activeAssignmentsCount} Active allocations
+          </p>
+        </div>
+
         <div className="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Districts</span>
@@ -396,34 +612,47 @@ export const ConstituencyManagement: React.FC = () => {
             <Layers className="w-4 h-4 text-indigo-600" />
           </div>
           <p className="text-2xl font-bold text-indigo-600 dark:text-indigo-400 mt-1">{wards.length}</p>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Electoral divisions</p>
-        </div>
-
-        <div className="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Coverage</span>
-            <MapPin className="w-4 h-4 text-emerald-600" />
-          </div>
-          <p className="text-base font-bold text-slate-800 dark:text-slate-200 mt-2 flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span>{constituenciesWithWardsCount}/{constituencies.length} Active</span>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+            {constituenciesWithWardsCount}/{constituencies.length} Constituencies Covered
           </p>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Andhra Pradesh state</p>
         </div>
       </div>
 
       {/* Navigation Tabs Bar */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-1.5 shadow-sm flex items-center gap-1">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-1.5 shadow-sm flex flex-wrap sm:flex-nowrap items-center gap-1">
+        {/* Tab 1: User Assignments */}
+        <button
+          onClick={() => handleTabChange('assignments')}
+          className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+            activeTab === 'assignments'
+              ? 'bg-purple-600 text-white shadow-xs'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60'
+          }`}
+        >
+          <UserCheck className="w-4 h-4" />
+          <span>User Assignments</span>
+          <span
+            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+              activeTab === 'assignments'
+                ? 'bg-white/20 text-white'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            {assignments.length}
+          </span>
+        </button>
+
+        {/* Tab 2: Constituencies */}
         <button
           onClick={() => handleTabChange('constituencies')}
-          className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+          className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
             activeTab === 'constituencies'
               ? 'bg-brand-600 text-white shadow-xs'
               : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60'
           }`}
         >
           <Building2 className="w-4 h-4" />
-          <span>Constituencies & Districts</span>
+          <span>Constituencies</span>
           <span
             className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
               activeTab === 'constituencies'
@@ -435,11 +664,12 @@ export const ConstituencyManagement: React.FC = () => {
           </span>
         </button>
 
+        {/* Tab 3: Wards */}
         <button
           onClick={() => handleTabChange('wards')}
-          className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+          className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
             activeTab === 'wards'
-              ? 'bg-brand-600 text-white shadow-xs'
+              ? 'bg-indigo-600 text-white shadow-xs'
               : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60'
           }`}
         >
@@ -456,21 +686,229 @@ export const ConstituencyManagement: React.FC = () => {
           </span>
         </button>
 
+        {/* Tab 4: Hierarchy */}
         <button
           onClick={() => handleTabChange('hierarchy')}
-          className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+          className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
             activeTab === 'hierarchy'
-              ? 'bg-brand-600 text-white shadow-xs'
+              ? 'bg-teal-600 text-white shadow-xs'
               : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60'
           }`}
         >
           <FolderTree className="w-4 h-4" />
-          <span>Hierarchy Tree View</span>
+          <span>Hierarchy Tree</span>
         </button>
       </div>
 
       {/* ===================================================================== */}
-      {/* TAB 1: CONSTITUENCIES & DISTRICTS */}
+      {/* TAB 1: USER GEOGRAPHIC ASSIGNMENTS                                    */}
+      {/* ===================================================================== */}
+      {activeTab === 'assignments' && (
+        <div className="space-y-4 animate-in fade-in duration-150">
+          {/* Filter and Search Bar */}
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col md:flex-row gap-3 items-center justify-between">
+            <div className="relative flex-1 w-full">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search assignments by user, constituency, district, or area..."
+                value={assignSearch}
+                onChange={(e) => setAssignSearch(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 text-slate-900 dark:text-slate-100"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              {/* Constituency Filter */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-slate-500 whitespace-nowrap">Constituency:</span>
+                <select
+                  value={assignConstituencyFilter}
+                  onChange={(e) => setAssignConstituencyFilter(e.target.value)}
+                  className="px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 focus:outline-none"
+                >
+                  <option value="all">All Constituencies ({assignments.length})</option>
+                  {Array.from(new Set(assignments.map((a) => a.constituency))).map((cName) => (
+                    <option key={cName} value={cName}>
+                      {cName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Status Filter */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-slate-500 whitespace-nowrap">Status:</span>
+                <select
+                  value={assignStatusFilter}
+                  onChange={(e) => setAssignStatusFilter(e.target.value)}
+                  className="px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 focus:outline-none"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="ACTIVE">Active Only</option>
+                  <option value="INACTIVE">Inactive Only</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Assignments Table */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+            <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                User Field Assignments ({filteredAssignments.length})
+              </h2>
+              <span className="text-[11px] text-slate-400">
+                Mandatory for Field Officer Voter Search and Payment Deductions
+              </span>
+            </div>
+
+            {isLoading ? (
+              <div className="py-12 flex justify-center">
+                <LoadingSpinner label="Loading user geographic assignments..." />
+              </div>
+            ) : filteredAssignments.length === 0 ? (
+              <div className="py-16 text-center">
+                <UserCheck className="w-12 h-12 mx-auto text-slate-300 dark:text-slate-600 mb-3" />
+                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">No Assignments Found</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm mx-auto">
+                  {assignSearch || assignConstituencyFilter !== 'all' || assignStatusFilter !== 'all'
+                    ? 'No records match your selected search or filter.'
+                    : 'Click "New Assignment" above to assign users to constituencies and wards.'}
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 font-semibold uppercase tracking-wider text-2xs">
+                      <th className="py-3 px-4">User Details</th>
+                      <th className="py-3 px-4">Assigned Territory</th>
+                      <th className="py-3 px-4">Permitted Wards</th>
+                      <th className="py-3 px-4">Status</th>
+                      <th className="py-3 px-4">Assigned On</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
+                    {filteredAssignments.map((a) => {
+                      const isActive = a.status === 'ACTIVE';
+                      return (
+                        <tr key={a.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors">
+                          {/* User Column */}
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 font-bold flex items-center justify-center shrink-0 text-xs">
+                                {a.user_full_name?.charAt(0) || a.user_username?.charAt(0) || 'U'}
+                              </div>
+                              <div>
+                                <div className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                                  <span>{a.user_full_name || a.user_username}</span>
+                                </div>
+                                <div className="flex items-center gap-1 text-[11px] text-slate-400">
+                                  <span>@{a.user_username}</span>
+                                  {a.assigner_username && (
+                                    <>
+                                      <span>•</span>
+                                      <span className="text-slate-400">by @{a.assigner_username}</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Territory Column */}
+                          <td className="py-3.5 px-4">
+                            <div>
+                              <div className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                                <MapPin className="w-3.5 h-3.5 text-brand-600 shrink-0" />
+                                <span>{a.constituency}</span>
+                              </div>
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                District: {a.district} {a.area ? `• Locality: ${a.area}` : ''}
+                              </p>
+                            </div>
+                          </td>
+
+                          {/* Wards Column */}
+                          <td className="py-3.5 px-4">
+                            <div className="flex flex-wrap gap-1 max-w-xs">
+                              {a.wards && a.wards.length > 0 ? (
+                                a.wards.map((w, idx) => (
+                                  <span
+                                    key={idx}
+                                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                      w.toUpperCase() === 'ALL'
+                                        ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                        : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300'
+                                    }`}
+                                  >
+                                    {w.toUpperCase() === 'ALL' ? 'ALL Wards' : `Ward ${w}`}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-slate-400 italic">ALL Wards</span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Status Column */}
+                          <td className="py-3.5 px-4">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleAssignmentStatus(a)}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold transition-all ${
+                                isActive
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100'
+                                  : 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 hover:bg-rose-100'
+                              }`}
+                              title="Click to toggle assignment status"
+                            >
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full ${
+                                  isActive ? 'bg-emerald-500' : 'bg-rose-500'
+                                }`}
+                              />
+                              <span>{isActive ? 'Active' : 'Inactive'}</span>
+                            </button>
+                          </td>
+
+                          {/* Assigned Date */}
+                          <td className="py-3.5 px-4 text-slate-400 text-[11px]">
+                            {a.created_at
+                              ? new Date(a.created_at).toLocaleDateString(undefined, {
+                                  year: 'numeric',
+                                  month: 'short',
+                                  day: 'numeric',
+                                })
+                              : '—'}
+                          </td>
+
+                          {/* Actions Column */}
+                          <td className="py-3.5 px-4 text-right">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteAssignment(a)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors"
+                              title="Delete Assignment"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* TAB 2: CONSTITUENCIES & DISTRICTS                                     */}
       {/* ===================================================================== */}
       {activeTab === 'constituencies' && (
         <div className="space-y-4 animate-in fade-in duration-150">
@@ -559,29 +997,33 @@ export const ConstituencyManagement: React.FC = () => {
                           >
                             Manage Wards
                           </button>
-                          <button
-                            onClick={() => {
-                              setConstituencyForm({
-                                id: c.id,
-                                name: c.name,
-                                code: c.code || '',
-                                district_id: c.district_id,
-                                district_name: c.district_name,
-                              });
-                              setShowConstituencyModal(true);
-                            }}
-                            className="p-1.5 text-slate-500 hover:text-brand-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                            title="Edit Constituency"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteConstituency(c)}
-                            className="p-1.5 text-slate-500 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
-                            title="Delete Constituency"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {isSuperAdmin && (
+                            <>
+                              <button
+                                onClick={() => {
+                                  setConstituencyForm({
+                                    id: c.id,
+                                    name: c.name,
+                                    code: c.code || '',
+                                    district_id: c.district_id,
+                                    district_name: c.district_name,
+                                  });
+                                  setShowConstituencyModal(true);
+                                }}
+                                className="p-1.5 text-slate-500 hover:text-brand-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                                title="Edit Constituency"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteConstituency(c)}
+                                className="p-1.5 text-slate-500 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                                title="Delete Constituency"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -598,17 +1040,19 @@ export const ConstituencyManagement: React.FC = () => {
                 <Building className="w-4 h-4 text-slate-400" />
                 <span>Districts Master List ({districts.length})</span>
               </h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setDistrictForm({ name: '', code: '', state: 'Andhra Pradesh' });
-                  setShowDistrictModal(true);
-                }}
-                className="text-xs font-semibold text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-1"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add District</span>
-              </button>
+              {isSuperAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDistrictForm({ name: '', code: '', state: 'Andhra Pradesh' });
+                    setShowDistrictModal(true);
+                  }}
+                  className="text-xs font-semibold text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add District</span>
+                </button>
+              )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
@@ -623,25 +1067,27 @@ export const ConstituencyManagement: React.FC = () => {
                       Code: <span className="font-mono">{d.code || '—'}</span> · {d.state}
                     </p>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => {
-                        setDistrictForm({ id: d.id, name: d.name, code: d.code || '', state: d.state });
-                        setShowDistrictModal(true);
-                      }}
-                      className="p-1 text-slate-400 hover:text-brand-600 rounded"
-                      title="Edit District"
-                    >
-                      <Edit2 className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteDistrict(d)}
-                      className="p-1 text-slate-400 hover:text-rose-600 rounded"
-                      title="Delete District"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
+                  {isSuperAdmin && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => {
+                          setDistrictForm({ id: d.id, name: d.name, code: d.code || '', state: d.state });
+                          setShowDistrictModal(true);
+                        }}
+                        className="p-1 text-slate-400 hover:text-brand-600 rounded"
+                        title="Edit District"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteDistrict(d)}
+                        className="p-1 text-slate-400 hover:text-rose-600 rounded"
+                        title="Delete District"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -650,7 +1096,7 @@ export const ConstituencyManagement: React.FC = () => {
       )}
 
       {/* ===================================================================== */}
-      {/* TAB 2: WARDS & AREAS */}
+      {/* TAB 3: WARDS & AREAS                                                  */}
       {/* ===================================================================== */}
       {activeTab === 'wards' && (
         <div className="space-y-4 animate-in fade-in duration-150">
@@ -760,30 +1206,34 @@ export const ConstituencyManagement: React.FC = () => {
                         </td>
                         <td className="py-3.5 px-4 text-right">
                           <div className="flex items-center justify-end gap-2">
-                            <button
-                              onClick={() => {
-                                setWardForm({
-                                  id: w.id,
-                                  ward_number: w.ward_number,
-                                  constituency_id: w.constituency_id,
-                                  constituency_name: w.constituency_name,
-                                  area_name: w.area_name || '',
-                                  description: w.description || '',
-                                });
-                                setShowWardModal(true);
-                              }}
-                              className="p-1.5 text-slate-500 hover:text-brand-600 dark:hover:text-brand-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-                              title="Edit Ward"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteWard(w)}
-                              className="p-1.5 text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors"
-                              title="Delete Ward"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            {isSuperAdmin && (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setWardForm({
+                                      id: w.id,
+                                      ward_number: w.ward_number,
+                                      constituency_id: w.constituency_id,
+                                      constituency_name: w.constituency_name,
+                                      area_name: w.area_name || '',
+                                      description: w.description || '',
+                                    });
+                                    setShowWardModal(true);
+                                  }}
+                                  className="p-1.5 text-slate-500 hover:text-brand-600 dark:hover:text-brand-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                                  title="Edit Ward"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteWard(w)}
+                                  className="p-1.5 text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors"
+                                  title="Delete Ward"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -797,7 +1247,7 @@ export const ConstituencyManagement: React.FC = () => {
       )}
 
       {/* ===================================================================== */}
-      {/* TAB 3: HIERARCHY TREE VIEW */}
+      {/* TAB 4: HIERARCHY TREE VIEW                                            */}
       {/* ===================================================================== */}
       {activeTab === 'hierarchy' && (
         <div className="space-y-4 animate-in fade-in duration-150">
@@ -962,7 +1412,160 @@ export const ConstituencyManagement: React.FC = () => {
       )}
 
       {/* ===================================================================== */}
-      {/* MODALS */}
+      {/* MODAL: CREATE USER ASSIGNMENT                                         */}
+      {/* ===================================================================== */}
+      {showAssignModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full p-6 border border-slate-200 dark:border-slate-800 shadow-xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 mb-4">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-purple-600" />
+                <span>Assign User Geographic Territory</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowAssignModal(false)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateAssignment} className="space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Target User Account *
+                </label>
+                <select
+                  required
+                  value={assignmentForm.user_id}
+                  onChange={(e) => setAssignmentForm({ ...assignmentForm, user_id: Number(e.target.value) })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none"
+                >
+                  <option value={0}>Select a user to assign...</option>
+                  {candidateUsers.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.full_name} (@{u.username}) — {u.role}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    District *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    list="district-options"
+                    value={assignmentForm.district}
+                    onChange={(e) => setAssignmentForm({ ...assignmentForm, district: e.target.value })}
+                    placeholder="e.g. West Godavari"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none"
+                  />
+                  <datalist id="district-options">
+                    {districts.map((d) => (
+                      <option key={d.id} value={d.name} />
+                    ))}
+                  </datalist>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Constituency *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    list="constituency-options"
+                    value={assignmentForm.constituency}
+                    onChange={(e) => setAssignmentForm({ ...assignmentForm, constituency: e.target.value })}
+                    placeholder="e.g. Tadepalligudem"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none"
+                  />
+                  <datalist id="constituency-options">
+                    {constituencies.map((c) => (
+                      <option key={c.id} value={c.name} />
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Permitted Wards (Comma-separated or ALL) *
+                </label>
+                <input
+                  type="text"
+                  value={assignmentForm.wardsInput}
+                  onChange={(e) => setAssignmentForm({ ...assignmentForm, wardsInput: e.target.value })}
+                  placeholder="e.g. 1, 2, 5, 8 or leave blank for ALL"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none"
+                />
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Leave empty or specify <code>ALL</code> to grant full access across all wards in this constituency.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Locality / Area Name (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={assignmentForm.area}
+                    onChange={(e) => setAssignmentForm({ ...assignmentForm, area: e.target.value })}
+                    placeholder="e.g. Urban North Sector"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Initial Status
+                  </label>
+                  <select
+                    value={assignmentForm.status}
+                    onChange={(e) =>
+                      setAssignmentForm({
+                        ...assignmentForm,
+                        status: e.target.value as 'ACTIVE' | 'INACTIVE',
+                      })
+                    }
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none"
+                  >
+                    <option value="ACTIVE">ACTIVE</option>
+                    <option value="INACTIVE">INACTIVE</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowAssignModal(false)}
+                  className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={assignFormLoading}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl font-semibold shadow-xs"
+                >
+                  {assignFormLoading ? 'Assigning...' : 'Save Territory Assignment'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* MASTER MODALS: DISTRICT, CONSTITUENCY, WARD                           */}
       {/* ===================================================================== */}
 
       {/* District Modal */}

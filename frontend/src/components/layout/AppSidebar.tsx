@@ -138,12 +138,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
 
               <NavLink to="/constituency-management" onClick={onClose} className={navLinkClass}>
                 <Building2 className="w-4 h-4 shrink-0 text-cyan-600 dark:text-cyan-400" />
-                <span>Constituencies & Wards</span>
-              </NavLink>
-
-              <NavLink to="/user-assignments" onClick={onClose} className={navLinkClass}>
-                <UserCheck className="w-4 h-4 shrink-0 text-violet-600 dark:text-violet-400" />
-                <span>User Assignments</span>
+                <span>Geographic Management</span>
               </NavLink>
 
               <NavLink to="/admin/wallets" onClick={onClose} className={navLinkClass}>
@@ -198,9 +193,9 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
                 <span>Users & Permissions</span>
               </NavLink>
 
-              <NavLink to="/user-assignments" onClick={onClose} className={navLinkClass}>
-                <UserCheck className="w-4 h-4 shrink-0 text-violet-600 dark:text-violet-400" />
-                <span>User Assignments</span>
+              <NavLink to="/constituency-management?tab=assignments" onClick={onClose} className={navLinkClass}>
+                <Building2 className="w-4 h-4 shrink-0 text-cyan-600 dark:text-cyan-400" />
+                <span>Geographic Assignments</span>
               </NavLink>
 
               <NavLink to="/admin/wallets" onClick={onClose} className={navLinkClass}>
