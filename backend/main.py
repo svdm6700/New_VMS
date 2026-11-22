@@ -3539,12 +3539,13 @@ def _build_payments_query(
     ward: Optional[str] = None,
     payment_status: Optional[str] = None,
     payment_method: Optional[str] = None,
-    created_by: Optional[int] = None
+    created_by: Optional[int] = None,
+    current_user: Optional[UserModel] = None
 ):
     """Helper to build filtered query on PaymentModel joined with VoterRecordModel and DocumentModel."""
     query = (
         db.query(PaymentModel)
-        .join(VoterRecordModel, PaymentModel.voter_id == VoterRecordModel.id)
+        .outerjoin(VoterRecordModel, PaymentModel.voter_id == VoterRecordModel.id)
         .outerjoin(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
     )
 
@@ -3556,6 +3557,9 @@ def _build_payments_query(
                 PaymentModel.receipt_number.ilike(f"%{term}%"),
                 PaymentModel.mobile_number.ilike(f"%{term}%"),
                 PaymentModel.transaction_reference.ilike(f"%{term}%"),
+                PaymentModel.voter_name.ilike(f"%{term}%"),
+                PaymentModel.epic_no.ilike(f"%{term}%"),
+                PaymentModel.house_no.ilike(f"%{term}%"),
                 VoterRecordModel.voter_name.ilike(f"%{term}%"),
                 VoterRecordModel.voter_id.ilike(f"%{term}%"),
                 VoterRecordModel.house_no.ilike(f"%{term}%"),
@@ -3578,13 +3582,13 @@ def _build_payments_query(
             pass
 
     if district and district.lower() != "all":
-        query = query.filter(DocumentModel.district.ilike(f"%{district}%"))
+        query = query.filter(or_(PaymentModel.district.ilike(f"%{district}%"), DocumentModel.district.ilike(f"%{district}%")))
     if constituency and constituency.lower() != "all":
-        query = query.filter(DocumentModel.constituency.ilike(f"%{constituency}%"))
+        query = query.filter(or_(PaymentModel.constituency.ilike(f"%{constituency}%"), DocumentModel.constituency.ilike(f"%{constituency}%")))
     if area and area.lower() != "all":
-        query = query.filter(DocumentModel.area.ilike(f"%{area}%"))
+        query = query.filter(or_(PaymentModel.area.ilike(f"%{area}%"), DocumentModel.area.ilike(f"%{area}%")))
     if ward and ward.lower() != "all":
-        query = query.filter(DocumentModel.ward_number.ilike(f"%{ward}%"))
+        query = query.filter(or_(PaymentModel.ward_number.ilike(f"%{ward}%"), DocumentModel.ward_number.ilike(f"%{ward}%")))
 
     if payment_status and payment_status.lower() != "all":
         query = query.filter(func.lower(PaymentModel.payment_status) == payment_status.lower())
@@ -3594,6 +3598,20 @@ def _build_payments_query(
 
     if created_by:
         query = query.filter(PaymentModel.created_by == created_by)
+
+    # Scoped Admin: filter by authorized geographic assignments
+    if current_user and getattr(current_user, "role", "") == "admin":
+        assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id
+        ).all()
+        if assignments:
+            geo_conds = []
+            for a in assignments:
+                if a.constituency:
+                    geo_conds.append(PaymentModel.constituency.ilike(f"%{a.constituency}%"))
+                    geo_conds.append(DocumentModel.constituency.ilike(f"%{a.constituency}%"))
+            if geo_conds:
+                query = query.filter(or_(*geo_conds))
 
     return query
 
@@ -3892,7 +3910,8 @@ def get_payments_reports(
         from_date=from_date,
         to_date=to_date,
         district=district,
-        constituency=constituency
+        constituency=constituency,
+        current_user=current_user
     )
 
     total_amount = db.query(func.coalesce(func.sum(PaymentModel.amount), 0)).filter(PaymentModel.id.in_(query.with_entities(PaymentModel.id))).scalar() or 0.0
@@ -3905,6 +3924,13 @@ def get_payments_reports(
         func.lower(PaymentModel.payment_status) == "pending"
     ).scalar() or 0.0
     total_count = query.count()
+
+    active_users = db.query(func.count(func.distinct(PaymentModel.created_by))).filter(
+        PaymentModel.id.in_(query.with_entities(PaymentModel.id)),
+        PaymentModel.created_by.isnot(None)
+    ).scalar() or 0
+
+    avg_disbursal = round(float(paid_amount) / total_count, 2) if total_count > 0 else 0.0
 
     # Breakdown by method
     method_data = (
@@ -3938,6 +3964,10 @@ def get_payments_reports(
             "district": district,
             "constituency": constituency
         },
+        "total_transactions": total_count,
+        "total_disbursed_amount": float(paid_amount or total_amount),
+        "average_disbursement": avg_disbursal,
+        "total_active_users": int(active_users),
         "summary": {
             "total_count": total_count,
             "total_amount": float(total_amount),
@@ -3981,7 +4011,8 @@ def export_payments(
         ward=ward,
         payment_status=payment_status,
         payment_method=payment_method,
-        created_by=created_by
+        created_by=created_by,
+        current_user=current_user
     ).order_by(PaymentModel.payment_date.desc(), PaymentModel.id.desc())
 
     payments = query.all()

@@ -51,10 +51,10 @@ export const ReportsExportPage: React.FC = () => {
       });
       const data = res.data;
       setReportStats({
-        totalTransactions: data.total_transactions || 0,
-        totalDisbursed: data.total_disbursed_amount || 0,
-        avgDisbursement: data.average_disbursement || 0,
-        activeUsersCount: data.total_active_users || 0,
+        totalTransactions: data.total_transactions ?? data.summary?.total_count ?? 0,
+        totalDisbursed: data.total_disbursed_amount ?? data.summary?.paid_amount ?? data.summary?.total_amount ?? 0,
+        avgDisbursement: data.average_disbursement ?? (data.summary?.total_count > 0 ? (data.summary?.paid_amount / data.summary?.total_count) : 0),
+        activeUsersCount: data.total_active_users ?? 0,
       });
     } catch (err: any) {
       console.warn('Failed to load payments report:', err);
@@ -71,14 +71,12 @@ export const ReportsExportPage: React.FC = () => {
     setDownloading(exportType);
     setMessage(null);
     try {
-      let url = '';
-      if (exportType === 'payments') {
-        url = `/api/payments/export?format=${format === 'excel' ? 'xlsx' : 'csv'}`;
-        if (fromDate) url += `&from_date=${fromDate}`;
-        if (toDate) url += `&to_date=${toDate}`;
-      } else {
-        url = `/api/payments/export?format=${format === 'excel' ? 'xlsx' : 'csv'}`;
-      }
+      const params = new URLSearchParams();
+      params.append('format', format === 'excel' ? 'xlsx' : 'csv');
+      if (fromDate) params.append('from_date', fromDate);
+      if (toDate) params.append('to_date', toDate);
+
+      const url = `/api/payments/export?${params.toString()}`;
 
       const res = await api.get(url, { responseType: 'blob' });
       const blob = new Blob([res.data], {
