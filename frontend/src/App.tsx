@@ -128,6 +128,8 @@ function AppLayout() {
               }
             />
             <Route path="/users" element={<Navigate to="/admin/users" replace />} />
+            <Route path="/admin/roles" element={<Navigate to="/admin/users?tab=roles" replace />} />
+            <Route path="/roles" element={<Navigate to="/admin/users?tab=roles" replace />} />
 
             {/* Geographic Master Management (Super Admin Exclusive) */}
             <Route

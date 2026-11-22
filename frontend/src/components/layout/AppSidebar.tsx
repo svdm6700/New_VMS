@@ -133,12 +133,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
 
               <NavLink to="/admin/users" onClick={onClose} className={navLinkClass}>
                 <Users className="w-4 h-4 shrink-0 text-purple-600 dark:text-purple-400" />
-                <span>User Management</span>
-              </NavLink>
-
-              <NavLink to="/admin/users?tab=roles" onClick={onClose} className={navLinkClass}>
-                <Shield className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
-                <span>Roles & Permissions</span>
+                <span>Users & Permissions</span>
               </NavLink>
 
               <NavLink to="/constituency-management" onClick={onClose} className={navLinkClass}>
@@ -200,7 +195,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
 
               <NavLink to="/admin/users" onClick={onClose} className={navLinkClass}>
                 <Users className="w-4 h-4 shrink-0 text-purple-600 dark:text-purple-400" />
-                <span>User Management</span>
+                <span>Users & Permissions</span>
               </NavLink>
 
               <NavLink to="/user-assignments" onClick={onClose} className={navLinkClass}>
