@@ -191,6 +191,7 @@ function AppLayout() {
               }
             />
             <Route path="/voter-entry" element={<Navigate to="/voter-entries" replace />} />
+            <Route path="/voter-search" element={<Navigate to="/voter-entries" replace />} />
 
             {/* Payments Dashboard (Super Admin & Admin) */}
             <Route

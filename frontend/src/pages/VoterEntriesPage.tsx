@@ -429,14 +429,14 @@ export const VoterEntriesPage: React.FC = () => {
         <div>
           <div className="flex items-center gap-2 mb-1.5">
             <span className="p-1 bg-white/20 rounded-lg text-white">
-              <CreditCard className="w-5 h-5" />
+              <Search className="w-5 h-5" />
             </span>
             <span className="text-xs font-semibold tracking-wider uppercase text-white/80">
               Voter Financial Ledger
             </span>
           </div>
           <h1 className="text-2xl font-bold tracking-tight">
-            Voter Details & Entry Management
+            Voter Search
           </h1>
           <p className="text-xs text-white/80 mt-1 font-telugu">
             ఓటర్ వివరాల శోధన, మొత్తం నమోదు & చెల్లింపుల లెడ్జర్

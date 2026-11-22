@@ -122,8 +122,8 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
               </NavLink>
 
               <NavLink to="/voter-entries" onClick={onClose} className={navLinkClass}>
-                <CreditCard className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                <span>Voter Entry Management</span>
+                <Search className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Voter Search</span>
               </NavLink>
 
               <NavLink to="/payments" onClick={onClose} className={navLinkClass}>
@@ -179,8 +179,8 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
               </NavLink>
 
               <NavLink to="/voter-entries" onClick={onClose} className={navLinkClass}>
-                <CreditCard className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                <span>Voter Entry Management</span>
+                <Search className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Voter Search</span>
               </NavLink>
 
               <NavLink to="/payments" onClick={onClose} className={navLinkClass}>
