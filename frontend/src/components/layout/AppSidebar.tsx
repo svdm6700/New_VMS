@@ -22,7 +22,6 @@ import {
   Search,
   FileText
 } from 'lucide-react';
-import { useDocuments } from '../../contexts/DocumentContext';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface AppSidebarProps {
@@ -31,7 +30,6 @@ interface AppSidebarProps {
 }
 
 export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
-  const { activeDoc } = useDocuments();
   const { user, isAuthenticated, isSuperAdmin, isAdmin, isUser, logout } = useAuth();
   const navigate = useNavigate();
 
@@ -95,42 +93,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
             <X className="w-5 h-5" />
           </button>
         </div>
-
-        {/* Role Badge Indicator */}
-        {isAuthenticated && user && (
-          <div className="mx-4 mt-3 px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/60 flex items-center justify-between">
-            <span className="text-3xs uppercase tracking-wider text-slate-400 font-semibold">Role Access</span>
-            <span
-              className={`px-2 py-0.5 rounded text-3xs font-bold uppercase tracking-wider ${
-                isSuperAdmin
-                  ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
-                  : isAdmin
-                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300'
-                  : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
-              }`}
-            >
-              {isSuperAdmin ? 'Super Admin' : isAdmin ? 'Admin' : 'Field User'}
-            </span>
-          </div>
-        )}
-
-        {/* Active Document Pill (for Admin / Super Admin) */}
-        {!isUser && activeDoc && (
-          <div className="mx-4 mt-2 p-2.5 rounded-xl bg-brand-50/70 dark:bg-brand-950/40 border border-brand-200/60 dark:border-brand-900/50">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-brand-600 animate-pulse" />
-              <span className="text-[10px] font-semibold tracking-wider text-brand-700 dark:text-brand-300 uppercase">
-                Active Document
-              </span>
-            </div>
-            <p className="text-xs font-medium text-slate-800 dark:text-slate-200 truncate">
-              {activeDoc.metadata?.filename || 'Document'}
-            </p>
-            <p className="text-[10px] text-slate-500 dark:text-slate-400">
-              {activeDoc.metadata?.records_count || activeDoc.records?.length || 0} voters · Ready
-            </p>
-          </div>
-        )}
 
         {/* Navigation Items */}
         <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto">
