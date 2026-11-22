@@ -128,7 +128,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
 
               <NavLink to="/payments" onClick={onClose} className={navLinkClass}>
                 <Receipt className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                <span>Payments Dashboard</span>
+                <span>Payments & Reports</span>
               </NavLink>
 
               <NavLink to="/admin/users" onClick={onClose} className={navLinkClass}>
@@ -154,11 +154,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
               <NavLink to="/admin/wallets" onClick={onClose} className={navLinkClass}>
                 <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                 <span>Wallet Management</span>
-              </NavLink>
-
-              <NavLink to="/reports" onClick={onClose} className={navLinkClass}>
-                <FileSpreadsheet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                <span>Reports & Export</span>
               </NavLink>
 
               <NavLink to="/settings" onClick={onClose} className={navLinkClass}>
@@ -200,7 +195,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
 
               <NavLink to="/payments" onClick={onClose} className={navLinkClass}>
                 <Receipt className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                <span>Payments Dashboard</span>
+                <span>Payments & Reports</span>
               </NavLink>
 
               <NavLink to="/admin/users" onClick={onClose} className={navLinkClass}>
@@ -216,11 +211,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
               <NavLink to="/admin/wallets" onClick={onClose} className={navLinkClass}>
                 <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                 <span>Wallet Management</span>
-              </NavLink>
-
-              <NavLink to="/reports" onClick={onClose} className={navLinkClass}>
-                <FileSpreadsheet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                <span>Reports & Export</span>
               </NavLink>
             </>
           )}

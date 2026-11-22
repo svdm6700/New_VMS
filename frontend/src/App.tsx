@@ -223,14 +223,10 @@ function AppLayout() {
               }
             />
 
-            {/* Reports & Export */}
+            {/* Reports & Export redirect to unified Payments & Reports tab */}
             <Route
               path="/reports"
-              element={
-                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
-                  <ReportsExportPage />
-                </ProtectedRoute>
-              }
+              element={<Navigate to="/payments?tab=reports" replace />}
             />
 
             {/* User Profile */}

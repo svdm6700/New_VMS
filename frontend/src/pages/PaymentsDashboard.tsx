@@ -65,6 +65,7 @@ import {
   PaymentReceipt
 } from '../services/paymentService';
 import { useAuth } from '../contexts/AuthContext';
+import { ReportsExportPage } from './ReportsExportPage';
 
 const STATUS_COLORS: Record<string, string> = {
   Paid: '#10B981', // emerald-500
@@ -84,6 +85,20 @@ const METHOD_COLORS: Record<string, string> = {
 export const PaymentsDashboard: React.FC = () => {
   const { user, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // Top-level View Mode: Overview/Transactions vs Reports & Data Export
+  const [activeMainTab, setActiveMainTab] = useState<'overview' | 'reports'>(() => {
+    return searchParams.get('tab') === 'reports' ? 'reports' : 'overview';
+  });
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam === 'reports') {
+      setActiveMainTab('reports');
+    } else if (tabParam === 'overview' || !tabParam) {
+      setActiveMainTab('overview');
+    }
+  }, [searchParams]);
 
   // Summary State (7 KPI Metrics)
   const [summary, setSummary] = useState<PaymentSummary>({
@@ -579,49 +594,96 @@ export const PaymentsDashboard: React.FC = () => {
         <div>
           <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
             <Receipt className="w-5 h-5 text-brand-600" />
-            <span>Payments Dashboard</span>
+            <span>Payments & Financial Reports</span>
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Track, record, verify, and report financial disbursement and welfare payments linked to voter records.
+            Track, record, verify, and export financial disbursement and welfare payments linked to voter records.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => handleExport('csv')}
-            disabled={exportingCsv}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-semibold shadow-2xs transition-colors"
-          >
-            {exportingCsv ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-            <span>Export CSV</span>
-          </button>
+        {activeMainTab === 'overview' && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => handleExport('csv')}
+              disabled={exportingCsv}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-semibold shadow-2xs transition-colors"
+            >
+              {exportingCsv ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              <span>Export CSV</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => handleExport('excel')}
-            disabled={exportingExcel}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-emerald-700 dark:text-emerald-400 rounded-xl text-xs font-semibold shadow-2xs transition-colors"
-          >
-            {exportingExcel ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileSpreadsheet className="w-3.5 h-3.5" />}
-            <span>Export Excel</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => handleExport('excel')}
+              disabled={exportingExcel}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-emerald-700 dark:text-emerald-400 rounded-xl text-xs font-semibold shadow-2xs transition-colors"
+            >
+              {exportingExcel ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileSpreadsheet className="w-3.5 h-3.5" />}
+              <span>Export Excel</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              resetAddForm();
-              setShowAddModal(true);
-            }}
-            className="flex items-center gap-1.5 px-4 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-semibold shadow-sm transition-all"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>Add Payment</span>
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => {
+                resetAddForm();
+                setShowAddModal(true);
+              }}
+              className="flex items-center gap-1.5 px-4 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-semibold shadow-sm transition-all"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>Add Payment</span>
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* PHASE 3 A: 7 SUMMARY KPI CARDS */}
+      {/* Main Mode Tab Switcher */}
+      <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+        <button
+          type="button"
+          onClick={() => {
+            setActiveMainTab('overview');
+            setSearchParams((prev) => {
+              const next = new URLSearchParams(prev);
+              next.delete('tab');
+              return next;
+            });
+          }}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${
+            activeMainTab === 'overview'
+              ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
+              : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-800'
+          }`}
+        >
+          <Receipt className="w-4 h-4" />
+          <span>Transactions & Analytics</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setActiveMainTab('reports');
+            setSearchParams((prev) => {
+              const next = new URLSearchParams(prev);
+              next.set('tab', 'reports');
+              return next;
+            });
+          }}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${
+            activeMainTab === 'reports'
+              ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
+              : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-800'
+          }`}
+        >
+          <FileSpreadsheet className="w-4 h-4" />
+          <span>Reports & Data Export</span>
+        </button>
+      </div>
+
+      {activeMainTab === 'overview' ? (
+        <>
+          {/* PHASE 3 A: 7 SUMMARY KPI CARDS */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
         {/* 1. Total Transactions */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-2xs">
@@ -1284,6 +1346,10 @@ export const PaymentsDashboard: React.FC = () => {
           </div>
         </div>
       </div>
+    </>
+  ) : (
+    <ReportsExportPage hideHeader />
+  )}
 
       {/* MODAL 1: ADD PAYMENT */}
       {showAddModal && (
