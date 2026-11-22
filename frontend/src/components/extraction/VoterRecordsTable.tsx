@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Search,
   Filter,
@@ -20,7 +21,8 @@ import {
   Printer,
   TableProperties,
   AlertCircle,
-  MapPin
+  MapPin,
+  CreditCard
 } from 'lucide-react';
 import { VoterRecord, DocumentItem } from '../../types/document';
 import { documentService } from '../../services/documentService';
@@ -627,6 +629,13 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
                             <Copy className="w-3.5 h-3.5" />
                           )}
                         </button>
+                        <Link
+                          to={`/voter-entries?voter_id=${r.id}`}
+                          className="p-1 text-slate-400 hover:text-emerald-600 rounded-md"
+                          title="Record Mobile Number & Amount Entry"
+                        >
+                          <CreditCard className="w-3.5 h-3.5" />
+                        </Link>
                         <button
                           onClick={() => {
                             setEditingRecord(r);

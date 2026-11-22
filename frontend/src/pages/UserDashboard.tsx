@@ -7,7 +7,6 @@ import {
   ArrowRight,
   FileSpreadsheet,
   Download,
-  BookOpen,
   User,
   Clock
 } from 'lucide-react';
@@ -194,19 +193,12 @@ export const UserDashboard: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end">
                         <Link
                           to="/extracted-data"
                           className="px-2.5 py-1 bg-brand-50 hover:bg-brand-100 dark:bg-brand-950 dark:hover:bg-brand-900 text-brand-600 dark:text-brand-300 rounded-lg text-xs font-semibold"
                         >
                           View Records
-                        </Link>
-                        <Link
-                          to="/reader"
-                          className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                          title="Open in PDF Reader"
-                        >
-                          <BookOpen className="w-4 h-4" />
                         </Link>
                       </div>
                     </td>

@@ -3,12 +3,9 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   UploadCloud,
-  FolderOpen,
-  BookOpen,
   TableProperties,
-  FileText,
-  Table2,
-  ScanEye,
+  CreditCard,
+  Receipt,
   Settings,
   Languages,
   X,
@@ -165,7 +162,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
           </NavLink>
 
           <NavLink
-            to="/documents"
+            to="/voter-entries"
             onClick={() => onClose()}
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
@@ -175,12 +172,12 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
               }`
             }
           >
-            <FolderOpen className="w-4 h-4 shrink-0" />
-            <span>Document Management</span>
+            <CreditCard className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <span>Voter Details & Entries</span>
           </NavLink>
 
           <NavLink
-            to="/reader"
+            to="/payments"
             onClick={() => onClose()}
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
@@ -190,53 +187,8 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
               }`
             }
           >
-            <BookOpen className="w-4 h-4 shrink-0" />
-            <span>PDF Reader</span>
-          </NavLink>
-
-          <NavLink
-            to="/text"
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <FileText className="w-4 h-4 shrink-0" />
-            <span>Extracted Text</span>
-          </NavLink>
-
-          <NavLink
-            to="/tables"
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <Table2 className="w-4 h-4 shrink-0" />
-            <span>Tables</span>
-          </NavLink>
-
-          <NavLink
-            to="/ocr"
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <ScanEye className="w-4 h-4 shrink-0" />
-            <span>OCR Results</span>
+            <Receipt className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <span>Payments Dashboard</span>
           </NavLink>
 
           <NavLink

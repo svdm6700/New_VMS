@@ -21,7 +21,7 @@ export const RecentDocuments: React.FC<RecentDocumentsProps> = ({ documents, onS
           <p className="text-xs text-slate-400">Latest Telugu documents and electoral rolls</p>
         </div>
         <button
-          onClick={() => navigate('/documents')}
+          onClick={() => navigate('/extracted-data')}
           className="text-xs font-semibold text-brand-600 dark:text-brand-400 hover:text-brand-700 flex items-center gap-1 transition-colors"
         >
           View all <ArrowRight className="w-3.5 h-3.5" />

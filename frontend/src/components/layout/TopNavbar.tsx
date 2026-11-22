@@ -16,14 +16,10 @@ const pageTitles: Record<string, string> = {
   '/admin/users': 'User Management & Permissions',
   '/profile': 'My Profile & Security',
   '/upload': 'Upload Voter Document',
-  '/documents': 'Document Management',
-  '/reader': 'Split-Screen Reader',
   '/extracted-data': 'Voter Records',
-  '/text': 'Extracted Text & Paragraphs',
-  '/tables': 'Extracted Tables',
-  '/ocr': 'Scanned OCR Recognition',
+  '/voter-entries': 'Voter Details & Entry Management',
+  '/payments': 'Payments Dashboard',
   '/settings': 'Application Settings',
-  '/login': 'VMS Login',
 };
 
 export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenSidebar }) => {

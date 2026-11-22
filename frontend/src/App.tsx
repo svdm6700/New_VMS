@@ -14,12 +14,9 @@ import { UserDashboard } from './pages/UserDashboard';
 import { UserManagement } from './pages/UserManagement';
 import { ProfilePage } from './pages/ProfilePage';
 import { UploadPDF } from './pages/UploadPDF';
-import { Documents } from './pages/Documents';
-import { PDFReader } from './pages/PDFReader';
 import { ExtractedData } from './pages/ExtractedData';
-import { ExtractedText } from './pages/ExtractedText';
-import { Tables } from './pages/Tables';
-import { OCRResults } from './pages/OCRResults';
+import { VoterEntriesPage } from './pages/VoterEntriesPage';
+import { PaymentsDashboard } from './pages/PaymentsDashboard';
 import { Settings } from './pages/Settings';
 
 const RootRedirect: React.FC = () => {
@@ -40,14 +37,25 @@ const RootRedirect: React.FC = () => {
 function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
+  const { isAuthenticated, isLoading } = useAuth();
   const isLoginPage = location.pathname === '/login';
 
-  // Dedicated standalone layout for Login page (no sidebar, no navbar, full screen centered)
-  if (isLoginPage) {
+  // If loading session state, show centered spinner
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center text-xs text-slate-400">
+        Loading VMS workspace...
+      </div>
+    );
+  }
+
+  // Dedicated standalone layout for Login page or unauthenticated state (no sidebar, no navbar, full screen centered)
+  if (isLoginPage || !isAuthenticated) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col justify-center items-center font-sans transition-colors duration-200">
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </div>
     );
@@ -127,45 +135,29 @@ function AppLayout() {
               }
             />
             <Route
-              path="/documents"
+              path="/voter-entries"
               element={
                 <ProtectedRoute>
-                  <Documents />
+                  <VoterEntriesPage />
                 </ProtectedRoute>
               }
             />
             <Route
-              path="/reader"
+              path="/payments"
               element={
                 <ProtectedRoute>
-                  <PDFReader />
+                  <PaymentsDashboard />
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/text"
-              element={
-                <ProtectedRoute>
-                  <ExtractedText />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/tables"
-              element={
-                <ProtectedRoute>
-                  <Tables />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/ocr"
-              element={
-                <ProtectedRoute>
-                  <OCRResults />
-                </ProtectedRoute>
-              }
-            />
+
+            {/* Redirect legacy removed routes to Voter Records */}
+            <Route path="/documents" element={<Navigate to="/extracted-data" replace />} />
+            <Route path="/reader" element={<Navigate to="/extracted-data" replace />} />
+            <Route path="/text" element={<Navigate to="/extracted-data" replace />} />
+            <Route path="/tables" element={<Navigate to="/extracted-data" replace />} />
+            <Route path="/ocr" element={<Navigate to="/extracted-data" replace />} />
+
             <Route
               path="/settings"
               element={

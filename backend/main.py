@@ -4,10 +4,13 @@ import json
 import os
 import re
 import csv
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import Any, Optional, List
 from io import BytesIO, StringIO
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
 
 # Ensure both project root and backend directory are in sys.path
 _BASE_DIR = Path(__file__).resolve().parent
@@ -31,7 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, desc, asc, text
+from sqlalchemy import or_, desc, asc, text, func, case
 
 try:
     from app.core.config import settings
@@ -39,16 +42,26 @@ except ImportError:
     from backend.app.core.config import settings
 
 try:
-    from backend.database import init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel, UserModel, RoleModel
+    from backend.database import (
+        init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel,
+        UserModel, RoleModel, VoterEntryModel, PermissionModel,
+        RolePermissionModel, UserRoleModel, AuditLogModel,
+        PaymentModel, PaymentAuditLogModel
+    )
     from backend.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
-    from backend.auth_deps import get_current_user, get_optional_current_user, require_admin
+    from backend.auth_deps import get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission
     from backend.processor import process_pdf
     from backend.excel import create_excel
     from backend.seed import seed_database
 except ImportError:
-    from database import init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel, UserModel, RoleModel
+    from database import (
+        init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel,
+        UserModel, RoleModel, VoterEntryModel, PermissionModel,
+        RolePermissionModel, UserRoleModel, AuditLogModel,
+        PaymentModel, PaymentAuditLogModel
+    )
     from security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
-    from auth_deps import get_current_user, get_optional_current_user, require_admin
+    from auth_deps import get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission
     from processor import process_pdf
     from excel import create_excel
     from seed import seed_database
@@ -163,6 +176,114 @@ class VoterRecordUpdate(BaseModel):
     house_no: Optional[str] = None
     voter_id: Optional[str] = None
     source_page: Optional[int] = None
+
+class VoterEntryCreate(BaseModel):
+    voter_id: int
+    mobile_number: str
+    amount: float
+    entry_date: Optional[str] = None
+    payment_method: Optional[str] = "Cash"
+    payment_status: Optional[str] = "Paid"
+    remarks: Optional[str] = None
+
+class VoterEntryUpdate(BaseModel):
+    mobile_number: Optional[str] = None
+    amount: Optional[float] = None
+    entry_date: Optional[str] = None
+    payment_method: Optional[str] = None
+    payment_status: Optional[str] = None
+    remarks: Optional[str] = None
+
+class PaymentCreateRequest(BaseModel):
+    voter_id: int
+    voter_entry_id: Optional[int] = None
+    mobile_number: str
+    amount: float
+    payment_date: Optional[str] = None
+    payment_method: str = "Cash" # Cash, UPI, Bank Transfer, Other
+    payment_status: str = "Paid" # Paid, Pending, Failed, Cancelled, Refunded
+    transaction_reference: Optional[str] = None
+    remarks: Optional[str] = None
+
+class PaymentUpdateRequest(BaseModel):
+    mobile_number: Optional[str] = None
+    amount: Optional[float] = None
+    payment_date: Optional[str] = None
+    payment_method: Optional[str] = None
+    payment_status: Optional[str] = None
+    transaction_reference: Optional[str] = None
+    remarks: Optional[str] = None
+
+class PaymentActionReasonRequest(BaseModel):
+    reason: str
+
+def number_to_words_inr(num: float) -> str:
+    """Convert number to Indian Rupee words (Crores, Lakhs, Thousands, Hundreds)."""
+    ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+            "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+            "Seventeen", "Eighteen", "Nineteen"]
+    tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+
+    def _two_digits(n: int) -> str:
+        if n == 0:
+            return ""
+        if n < 20:
+            return ones[n]
+        return tens[n // 10] + (" " + ones[n % 10] if n % 10 != 0 else "")
+
+    def _three_digits(n: int) -> str:
+        h = n // 100
+        rem = n % 100
+        res = ""
+        if h > 0:
+            res += ones[h] + " Hundred"
+            if rem > 0:
+                res += " and "
+        if rem > 0:
+            res += _two_digits(rem)
+        return res
+
+    integer_part = int(num)
+    decimal_part = int(round((num - integer_part) * 100))
+
+    if integer_part == 0 and decimal_part == 0:
+        return "Zero Rupees Only"
+
+    crores = integer_part // 10000000
+    rem = integer_part % 10000000
+    lakhs = rem // 100000
+    rem = rem % 100000
+    thousands = rem // 1000
+    rem = rem % 1000
+
+    parts = []
+    if crores > 0:
+        parts.append(f"{_two_digits(crores)} Crore")
+    if lakhs > 0:
+        parts.append(f"{_two_digits(lakhs)} Lakh")
+    if thousands > 0:
+        parts.append(f"{_two_digits(thousands)} Thousand")
+    if rem > 0:
+        parts.append(_three_digits(rem))
+
+    words = " ".join(parts).strip()
+    result = f"Rupees {words}" if words else "Rupees"
+    if decimal_part > 0:
+        result += f" and {_two_digits(decimal_part)} Paise"
+    result += " Only"
+    return result
+
+class RoleCreateRequest(BaseModel):
+    role_name: str
+    description: Optional[str] = None
+    permission_codes: List[str] = []
+
+class RoleUpdateRequest(BaseModel):
+    description: Optional[str] = None
+    permission_codes: Optional[List[str]] = None
+
+class UserRoleAssignRequest(BaseModel):
+    role_name: str
 
 class ExportBody(BaseModel):
     result: Optional[dict[str, Any]] = None
@@ -1285,3 +1406,1794 @@ def get_document_ocr(doc_id: str, db: Session = Depends(get_db)):
         "pages": ocr_pages,
         "validation": validation
     }
+
+# -------------------------------------------------------------
+# 14. Voter Search and Amount Entry Management
+# -------------------------------------------------------------
+
+@app.get("/api/voters/search", tags=["Voter Search & Entries"])
+def search_voters(
+    q: Optional[str] = Query(None, description="Search by EPIC Voter ID, Name, House No, Area, or Mobile"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    district: Optional[str] = None,
+    constituency: Optional[str] = None,
+    area: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Search voter records with support for partial name, EPIC voter ID, house no, area, or mobile number.
+    Returns paginated voter results with their location metadata.
+    """
+    query = db.query(VoterRecordModel).join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+
+    if q and q.strip():
+        term = q.strip()
+        clean_digits = re.sub(r"\D", "", term)
+        search_conditions = [
+            VoterRecordModel.voter_id.ilike(f"%{term}%"),
+            VoterRecordModel.voter_name.ilike(f"%{term}%"),
+            VoterRecordModel.relation_name.ilike(f"%{term}%"),
+            VoterRecordModel.house_no.ilike(f"%{term}%"),
+            VoterRecordModel.serial_no.ilike(f"%{term}%"),
+            DocumentModel.area.ilike(f"%{term}%"),
+            DocumentModel.constituency.ilike(f"%{term}%"),
+            DocumentModel.district.ilike(f"%{term}%"),
+        ]
+        if len(clean_digits) >= 4:
+            search_conditions.append(
+                VoterRecordModel.entries.any(VoterEntryModel.mobile_number.ilike(f"%{clean_digits}%"))
+            )
+        query = query.filter(or_(*search_conditions))
+
+    if district and district.lower() != "all":
+        query = query.filter(DocumentModel.district.ilike(f"%{district}%"))
+    if constituency and constituency.lower() != "all":
+        query = query.filter(DocumentModel.constituency.ilike(f"%{constituency}%"))
+    if area and area.lower() != "all":
+        query = query.filter(DocumentModel.area.ilike(f"%{area}%"))
+
+    total = query.count()
+    records = query.order_by(VoterRecordModel.id.asc()).offset((page - 1) * limit).limit(limit).all()
+
+    return {
+        "voters": [r.to_dict() for r in records],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit if limit > 0 else 1
+    }
+
+@app.get("/api/voters/{voter_id}", tags=["Voter Search & Entries"])
+def get_voter_details(voter_id: str, db: Session = Depends(get_db)):
+    """
+    Fetch complete voter details and previous entries by database record ID or EPIC voter ID.
+    """
+    voter = None
+    if voter_id.isdigit():
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == int(voter_id)).first()
+    if not voter:
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.voter_id == voter_id).first()
+
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter record not found.")
+
+    voter_data = voter.to_dict()
+    voter_data["entries"] = [e.to_dict() for e in voter.entries]
+    return voter_data
+
+@app.get("/api/voters/{voter_id}/entries", tags=["Voter Search & Entries"])
+def get_voter_entries(voter_id: str, db: Session = Depends(get_db)):
+    """
+    Fetch previous entries for a specific voter.
+    """
+    voter = None
+    if voter_id.isdigit():
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == int(voter_id)).first()
+    if not voter:
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.voter_id == voter_id).first()
+
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter record not found.")
+
+    entries = (
+        db.query(VoterEntryModel)
+        .filter(VoterEntryModel.voter_id == voter.id)
+        .order_by(desc(VoterEntryModel.created_at))
+        .all()
+    )
+    return {
+        "voter_id": voter.id,
+        "voter_name": voter.voter_name,
+        "epic_no": voter.voter_id,
+        "total_entries": len(entries),
+        "total_amount": sum(float(e.amount or 0) for e in entries),
+        "entries": [e.to_dict() for e in entries]
+    }
+
+@app.post("/api/voter-entries", status_code=status.HTTP_201_CREATED, tags=["Voter Search & Entries"])
+def create_voter_entry(
+    req: VoterEntryCreate,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Save mobile number and amount entry for the selected voter.
+    """
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == req.voter_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Selected voter does not exist.")
+
+    # Validate mobile number (strip non-digits, ensure 10 digits)
+    clean_mobile = re.sub(r"\D", "", req.mobile_number)
+    if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
+        clean_mobile = clean_mobile[2:]
+    if len(clean_mobile) != 10:
+        raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
+
+    # Validate amount
+    if req.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be a positive number greater than 0.")
+
+    # Parse entry date
+    if req.entry_date:
+        try:
+            entry_d = datetime.strptime(req.entry_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Entry date must be in YYYY-MM-DD format.")
+    else:
+        entry_d = datetime.now(timezone.utc).date()
+
+    # Prevent duplicate submission within last 5 seconds for the same voter, mobile, amount
+    five_sec_ago = datetime.now(timezone.utc) - timedelta(seconds=5)
+    recent_dup = db.query(VoterEntryModel).filter(
+        VoterEntryModel.voter_id == req.voter_id,
+        VoterEntryModel.mobile_number == clean_mobile,
+        VoterEntryModel.amount == req.amount,
+        VoterEntryModel.created_at >= five_sec_ago
+    ).first()
+    if recent_dup:
+        raise HTTPException(status_code=409, detail="Duplicate entry detected. Please wait a moment before resubmitting.")
+
+    new_entry = VoterEntryModel(
+        voter_id=voter.id,
+        mobile_number=clean_mobile,
+        amount=req.amount,
+        entry_date=entry_d,
+        remarks=req.remarks.strip() if req.remarks else None,
+        created_by=current_user.id,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc)
+    )
+    db.add(new_entry)
+    db.commit()
+    db.refresh(new_entry)
+
+    return {
+        "status": "success",
+        "message": "Voter entry saved successfully.",
+        "entry": new_entry.to_dict()
+    }
+
+@app.put("/api/voter-entries/{entry_id}", tags=["Voter Search & Entries"])
+def update_voter_entry(
+    entry_id: int,
+    req: VoterEntryUpdate,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update an existing voter entry. Admin can edit any entry; regular users can only edit their own.
+    """
+    entry = db.query(VoterEntryModel).filter(VoterEntryModel.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found.")
+
+    if current_user.role.lower() != "admin" and entry.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not have permission to edit this entry.")
+
+    if req.mobile_number is not None:
+        clean_mobile = re.sub(r"\D", "", req.mobile_number)
+        if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
+            clean_mobile = clean_mobile[2:]
+        if len(clean_mobile) != 10:
+            raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
+        entry.mobile_number = clean_mobile
+
+    if req.amount is not None:
+        if req.amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be a positive number greater than 0.")
+        entry.amount = req.amount
+
+    if req.entry_date is not None:
+        try:
+            entry.entry_date = datetime.strptime(req.entry_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Entry date must be in YYYY-MM-DD format.")
+
+    if req.remarks is not None:
+        entry.remarks = req.remarks.strip() if req.remarks else None
+
+    entry.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(entry)
+
+    return {
+        "status": "success",
+        "message": "Entry updated successfully.",
+        "entry": entry.to_dict()
+    }
+
+@app.delete("/api/voter-entries/{entry_id}", tags=["Voter Search & Entries"])
+def delete_voter_entry(
+    entry_id: int,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a voter entry. Admin can delete any entry; regular users can only delete their own.
+    """
+    entry = db.query(VoterEntryModel).filter(VoterEntryModel.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found.")
+
+    if current_user.role.lower() != "admin" and entry.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not have permission to delete this entry.")
+
+    db.delete(entry)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "Entry deleted successfully.",
+        "id": entry_id
+    }
+
+# -------------------------------------------------------------
+# 15. Payments Dashboard & Transaction Management APIs
+# -------------------------------------------------------------
+
+@app.get("/api/payments/dashboard/summary", tags=["Payments Dashboard"])
+@app.get("/api/payments/summary", tags=["Payments Dashboard"])
+def get_payments_summary(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """
+    Compute real-time summary KPI cards dynamically from PostgreSQL `payments` table:
+    1. Total Transactions
+    2. Total Amount Recorded
+    3. Total Paid Amount
+    4. Total Pending Amount
+    5. Total Failed Transactions (and failed amount)
+    6. Today's Collection (with yesterday comparison)
+    7. This Month's Collection (with last month comparison)
+    """
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+    start_of_this_month = date(today.year, today.month, 1)
+
+    # Calculate last month's date bounds
+    if today.month == 1:
+        start_of_last_month = date(today.year - 1, 12, 1)
+        end_of_last_month = date(today.year - 1, 12, 31)
+    else:
+        start_of_last_month = date(today.year, today.month - 1, 1)
+        import calendar
+        _, last_day = calendar.monthrange(today.year, today.month - 1)
+        end_of_last_month = date(today.year, today.month - 1, last_day)
+
+    total_amount_val = db.query(func.coalesce(func.sum(PaymentModel.amount), 0)).scalar()
+    total_transactions_val = db.query(func.count(PaymentModel.id)).scalar()
+
+    paid_amount_val = db.query(
+        func.coalesce(func.sum(PaymentModel.amount), 0)
+    ).filter(
+        func.lower(PaymentModel.payment_status) == "paid"
+    ).scalar()
+
+    pending_amount_val = db.query(
+        func.coalesce(func.sum(PaymentModel.amount), 0)
+    ).filter(
+        func.lower(PaymentModel.payment_status) == "pending"
+    ).scalar()
+
+    failed_query = db.query(
+        func.count(PaymentModel.id),
+        func.coalesce(func.sum(PaymentModel.amount), 0)
+    ).filter(
+        func.lower(PaymentModel.payment_status) == "failed"
+    ).first()
+    failed_count = failed_query[0] if failed_query else 0
+    failed_amount = float(failed_query[1] or 0.0) if failed_query else 0.0
+
+    refunded_amount_val = db.query(
+        func.coalesce(func.sum(PaymentModel.amount), 0)
+    ).filter(
+        func.lower(PaymentModel.payment_status) == "refunded"
+    ).scalar()
+
+    cancelled_amount_val = db.query(
+        func.coalesce(func.sum(PaymentModel.amount), 0)
+    ).filter(
+        func.lower(PaymentModel.payment_status) == "cancelled"
+    ).scalar()
+
+    # Today vs Yesterday Collections
+    today_collection_val = db.query(
+        func.coalesce(func.sum(PaymentModel.amount), 0)
+    ).filter(
+        func.lower(PaymentModel.payment_status) == "paid",
+        PaymentModel.payment_date == today
+    ).scalar()
+
+    yesterday_collection_val = db.query(
+        func.coalesce(func.sum(PaymentModel.amount), 0)
+    ).filter(
+        func.lower(PaymentModel.payment_status) == "paid",
+        PaymentModel.payment_date == yesterday
+    ).scalar()
+
+    # This Month vs Last Month Collections
+    this_month_collection_val = db.query(
+        func.coalesce(func.sum(PaymentModel.amount), 0)
+    ).filter(
+        func.lower(PaymentModel.payment_status) == "paid",
+        PaymentModel.payment_date >= start_of_this_month,
+        PaymentModel.payment_date <= today
+    ).scalar()
+
+    last_month_collection_val = db.query(
+        func.coalesce(func.sum(PaymentModel.amount), 0)
+    ).filter(
+        func.lower(PaymentModel.payment_status) == "paid",
+        PaymentModel.payment_date >= start_of_last_month,
+        PaymentModel.payment_date <= end_of_last_month
+    ).scalar()
+
+    total_amt = float(total_amount_val or 0.0)
+    paid_amt = float(paid_amount_val or 0.0)
+    pending_amt = float(pending_amount_val or 0.0)
+    today_col = float(today_collection_val or 0.0)
+    yesterday_col = float(yesterday_collection_val or 0.0)
+    this_month_col = float(this_month_collection_val or 0.0)
+    last_month_col = float(last_month_collection_val or 0.0)
+
+    # Percentage calculations
+    paid_pct = round((paid_amt / total_amt * 100), 1) if total_amt > 0 else 0.0
+    pending_pct = round((pending_amt / total_amt * 100), 1) if total_amt > 0 else 0.0
+
+    today_growth = 0.0
+    if yesterday_col > 0:
+        today_growth = round(((today_col - yesterday_col) / yesterday_col * 100), 1)
+    elif today_col > 0:
+        today_growth = 100.0
+
+    month_growth = 0.0
+    if last_month_col > 0:
+        month_growth = round(((this_month_col - last_month_col) / last_month_col * 100), 1)
+    elif this_month_col > 0:
+        month_growth = 100.0
+
+    return {
+        "total_transactions": int(total_transactions_val or 0),
+        "total_amount": total_amt,
+        "total_amount_recorded": total_amt,
+        "total_payments": int(total_transactions_val or 0),
+        "paid_amount": paid_amt,
+        "pending_amount": pending_amt,
+        "failed_transactions": int(failed_count or 0),
+        "failed_amount": failed_amount,
+        "refunded_amount": float(refunded_amount_val or 0.0),
+        "cancelled_amount": float(cancelled_amount_val or 0.0),
+        "today_collection": today_col,
+        "yesterday_collection": yesterday_col,
+        "this_month_collection": this_month_col,
+        "last_month_collection": last_month_col,
+        "paid_percentage": paid_pct,
+        "pending_percentage": pending_pct,
+        "today_growth_pct": today_growth,
+        "month_growth_pct": month_growth,
+    }
+
+@app.get("/api/payments/dashboard/daily-collection", tags=["Payments Dashboard"])
+def get_daily_collection_chart(
+    days: int = Query(30, ge=7, le=90),
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Returns daily collection series for charting."""
+    today = datetime.now(timezone.utc).date()
+    start_d = today - timedelta(days=days - 1)
+    end_d = today
+
+    if from_date:
+        try:
+            start_d = datetime.strptime(from_date, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    if to_date:
+        try:
+            end_d = datetime.strptime(to_date, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+
+    records = (
+        db.query(
+            PaymentModel.payment_date,
+            func.coalesce(func.sum(PaymentModel.amount), 0).label("total_amount"),
+            func.coalesce(func.sum(case((func.lower(PaymentModel.payment_status) == "paid", PaymentModel.amount), else_=0)), 0).label("paid_amount"),
+            func.coalesce(func.sum(case((func.lower(PaymentModel.payment_status) == "pending", PaymentModel.amount), else_=0)), 0).label("pending_amount"),
+            func.count(PaymentModel.id).label("count")
+        )
+        .filter(PaymentModel.payment_date >= start_d, PaymentModel.payment_date <= end_d)
+        .group_by(PaymentModel.payment_date)
+        .order_by(PaymentModel.payment_date.asc())
+        .all()
+    )
+
+    result = []
+    # Build complete date map
+    rec_map = {
+        r[0]: {
+            "date": r[0].isoformat(),
+            "total_amount": float(r[1] or 0.0),
+            "paid_amount": float(r[2] or 0.0),
+            "pending_amount": float(r[3] or 0.0),
+            "count": int(r[4] or 0)
+        }
+        for r in records
+    }
+
+    curr = start_d
+    while curr <= end_d:
+        if curr in rec_map:
+            result.append(rec_map[curr])
+        else:
+            result.append({
+                "date": curr.isoformat(),
+                "total_amount": 0.0,
+                "paid_amount": 0.0,
+                "pending_amount": 0.0,
+                "count": 0
+            })
+        curr += timedelta(days=1)
+
+    return result
+
+@app.get("/api/payments/dashboard/monthly-collection", tags=["Payments Dashboard"])
+def get_monthly_collection_chart(
+    months: int = Query(12, ge=3, le=24),
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Returns monthly collection breakdown for charting."""
+    today = datetime.now(timezone.utc).date()
+    start_d = date(today.year - 1, today.month, 1)
+
+    records = (
+        db.query(
+            func.to_char(PaymentModel.payment_date, 'YYYY-MM').label("month_str"),
+            func.coalesce(func.sum(PaymentModel.amount), 0).label("total_amount"),
+            func.coalesce(func.sum(case((func.lower(PaymentModel.payment_status) == "paid", PaymentModel.amount), else_=0)), 0).label("paid_amount"),
+            func.coalesce(func.sum(case((func.lower(PaymentModel.payment_status) == "pending", PaymentModel.amount), else_=0)), 0).label("pending_amount"),
+            func.count(PaymentModel.id).label("count")
+        )
+        .filter(PaymentModel.payment_date >= start_d)
+        .group_by(func.to_char(PaymentModel.payment_date, 'YYYY-MM'))
+        .order_by(func.to_char(PaymentModel.payment_date, 'YYYY-MM').asc())
+        .all()
+    )
+
+    return [
+        {
+            "month": r[0],
+            "total_amount": float(r[1] or 0.0),
+            "paid_amount": float(r[2] or 0.0),
+            "pending_amount": float(r[3] or 0.0),
+            "count": int(r[4] or 0)
+        }
+        for r in records
+    ]
+
+@app.get("/api/payments/dashboard/status-distribution", tags=["Payments Dashboard"])
+def get_status_distribution(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Returns distribution of transactions across payment statuses."""
+    total_count = db.query(func.count(PaymentModel.id)).scalar() or 0
+    records = (
+        db.query(
+            PaymentModel.payment_status,
+            func.count(PaymentModel.id).label("count"),
+            func.coalesce(func.sum(PaymentModel.amount), 0).label("total_amount")
+        )
+        .group_by(PaymentModel.payment_status)
+        .all()
+    )
+
+    return [
+        {
+            "status": r[0],
+            "count": int(r[1] or 0),
+            "total_amount": float(r[2] or 0.0),
+            "percentage": round(int(r[1]) / total_count * 100, 1) if total_count > 0 else 0.0
+        }
+        for r in records
+    ]
+
+@app.get("/api/payments/dashboard/method-distribution", tags=["Payments Dashboard"])
+def get_method_distribution(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Returns distribution of transactions across payment methods."""
+    total_count = db.query(func.count(PaymentModel.id)).scalar() or 0
+    records = (
+        db.query(
+            PaymentModel.payment_method,
+            func.count(PaymentModel.id).label("count"),
+            func.coalesce(func.sum(PaymentModel.amount), 0).label("total_amount")
+        )
+        .group_by(PaymentModel.payment_method)
+        .all()
+    )
+
+    return [
+        {
+            "method": r[0],
+            "count": int(r[1] or 0),
+            "total_amount": float(r[2] or 0.0),
+            "percentage": round(int(r[1]) / total_count * 100, 1) if total_count > 0 else 0.0
+        }
+        for r in records
+    ]
+
+@app.get("/api/payments/dashboard/location-collection", tags=["Payments Dashboard"])
+def get_location_collection(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Returns location-wise (district and constituency) payment metrics."""
+    district_records = (
+        db.query(
+            func.coalesce(DocumentModel.district, "Unknown District").label("district"),
+            func.count(PaymentModel.id).label("count"),
+            func.coalesce(func.sum(PaymentModel.amount), 0).label("total_amount"),
+            func.coalesce(func.sum(case((func.lower(PaymentModel.payment_status) == "paid", PaymentModel.amount), else_=0)), 0).label("paid_amount")
+        )
+        .join(VoterRecordModel, PaymentModel.voter_id == VoterRecordModel.id)
+        .outerjoin(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+        .group_by(DocumentModel.district)
+        .order_by(desc("total_amount"))
+        .limit(10)
+        .all()
+    )
+
+    constituency_records = (
+        db.query(
+            func.coalesce(DocumentModel.constituency, "Unknown Constituency").label("constituency"),
+            func.count(PaymentModel.id).label("count"),
+            func.coalesce(func.sum(PaymentModel.amount), 0).label("total_amount"),
+            func.coalesce(func.sum(case((func.lower(PaymentModel.payment_status) == "paid", PaymentModel.amount), else_=0)), 0).label("paid_amount")
+        )
+        .join(VoterRecordModel, PaymentModel.voter_id == VoterRecordModel.id)
+        .outerjoin(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+        .group_by(DocumentModel.constituency)
+        .order_by(desc("total_amount"))
+        .limit(10)
+        .all()
+    )
+
+    return {
+        "districts": [
+            {
+                "district": r[0],
+                "count": int(r[1] or 0),
+                "total_amount": float(r[2] or 0.0),
+                "paid_amount": float(r[3] or 0.0)
+            }
+            for r in district_records
+        ],
+        "constituencies": [
+            {
+                "constituency": r[0],
+                "count": int(r[1] or 0),
+                "total_amount": float(r[2] or 0.0),
+                "paid_amount": float(r[3] or 0.0)
+            }
+            for r in constituency_records
+        ]
+    }
+
+def _build_payments_query(
+    db: Session,
+    q: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    district: Optional[str] = None,
+    constituency: Optional[str] = None,
+    area: Optional[str] = None,
+    ward: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    payment_method: Optional[str] = None,
+    created_by: Optional[int] = None
+):
+    """Helper to build filtered query on PaymentModel joined with VoterRecordModel and DocumentModel."""
+    query = (
+        db.query(PaymentModel)
+        .join(VoterRecordModel, PaymentModel.voter_id == VoterRecordModel.id)
+        .outerjoin(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+    )
+
+    if q and q.strip():
+        term = q.strip()
+        query = query.filter(
+            or_(
+                PaymentModel.transaction_id.ilike(f"%{term}%"),
+                PaymentModel.receipt_number.ilike(f"%{term}%"),
+                PaymentModel.mobile_number.ilike(f"%{term}%"),
+                PaymentModel.transaction_reference.ilike(f"%{term}%"),
+                VoterRecordModel.voter_name.ilike(f"%{term}%"),
+                VoterRecordModel.voter_id.ilike(f"%{term}%"),
+                VoterRecordModel.house_no.ilike(f"%{term}%"),
+                DocumentModel.area.ilike(f"%{term}%")
+            )
+        )
+
+    if from_date:
+        try:
+            fd = datetime.strptime(from_date, "%Y-%m-%d").date()
+            query = query.filter(PaymentModel.payment_date >= fd)
+        except ValueError:
+            pass
+
+    if to_date:
+        try:
+            td = datetime.strptime(to_date, "%Y-%m-%d").date()
+            query = query.filter(PaymentModel.payment_date <= td)
+        except ValueError:
+            pass
+
+    if district and district.lower() != "all":
+        query = query.filter(DocumentModel.district.ilike(f"%{district}%"))
+    if constituency and constituency.lower() != "all":
+        query = query.filter(DocumentModel.constituency.ilike(f"%{constituency}%"))
+    if area and area.lower() != "all":
+        query = query.filter(DocumentModel.area.ilike(f"%{area}%"))
+    if ward and ward.lower() != "all":
+        query = query.filter(DocumentModel.ward_number.ilike(f"%{ward}%"))
+
+    if payment_status and payment_status.lower() != "all":
+        query = query.filter(func.lower(PaymentModel.payment_status) == payment_status.lower())
+
+    if payment_method and payment_method.lower() != "all":
+        query = query.filter(func.lower(PaymentModel.payment_method) == payment_method.lower())
+
+    if created_by:
+        query = query.filter(PaymentModel.created_by == created_by)
+
+    return query
+
+@app.get("/api/payments", tags=["Payments Dashboard"])
+def list_payments(
+    q: Optional[str] = Query(None, description="Search voter name, EPIC ID, mobile, or transaction ID"),
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    district: Optional[str] = None,
+    constituency: Optional[str] = None,
+    area: Optional[str] = None,
+    ward: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    payment_method: Optional[str] = None,
+    created_by: Optional[int] = None,
+    sort_by: str = "id",
+    order: str = "desc",
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """
+    Search and filter payments with pagination, column sorting, and dynamic sub-aggregations.
+    """
+    query = _build_payments_query(
+        db=db,
+        q=q,
+        from_date=from_date,
+        to_date=to_date,
+        district=district,
+        constituency=constituency,
+        area=area,
+        ward=ward,
+        payment_status=payment_status,
+        payment_method=payment_method,
+        created_by=created_by
+    )
+
+    total = query.count()
+
+    # Sub-aggregations for the filtered dataset
+    filtered_total = db.query(func.coalesce(func.sum(PaymentModel.amount), 0)).filter(PaymentModel.id.in_(query.with_entities(PaymentModel.id))).scalar() or 0.0
+    filtered_paid = db.query(func.coalesce(func.sum(PaymentModel.amount), 0)).filter(
+        PaymentModel.id.in_(query.with_entities(PaymentModel.id)),
+        func.lower(PaymentModel.payment_status) == "paid"
+    ).scalar() or 0.0
+    filtered_pending = db.query(func.coalesce(func.sum(PaymentModel.amount), 0)).filter(
+        PaymentModel.id.in_(query.with_entities(PaymentModel.id)),
+        func.lower(PaymentModel.payment_status) == "pending"
+    ).scalar() or 0.0
+
+    order_col = getattr(PaymentModel, sort_by, PaymentModel.id)
+    query = query.order_by(desc(order_col) if order.lower() == "desc" else asc(order_col))
+
+    payments = query.offset((page - 1) * limit).limit(limit).all()
+
+    return {
+        "payments": [p.to_dict() for p in payments],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit if limit > 0 else 1,
+        "filtered_summary": {
+            "total_amount": float(filtered_total),
+            "paid_amount": float(filtered_paid),
+            "pending_amount": float(filtered_pending),
+            "count": total
+        }
+    }
+
+@app.post("/api/payments", status_code=status.HTTP_201_CREATED, tags=["Payments Dashboard"])
+def create_payment(
+    req: PaymentCreateRequest,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Record a new payment transaction against a selected voter with full validations,
+    unique receipt number, transaction ID, and initial audit log.
+    """
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == req.voter_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Selected voter does not exist in the database.")
+
+    clean_mobile = re.sub(r"\D", "", req.mobile_number)
+    if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
+        clean_mobile = clean_mobile[2:]
+    if len(clean_mobile) != 10:
+        raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
+
+    if req.amount <= 0:
+        raise HTTPException(status_code=400, detail="Payment amount must be a positive number greater than zero.")
+
+    p_date = None
+    if req.payment_date:
+        try:
+            p_date = datetime.strptime(req.payment_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Payment date must be in YYYY-MM-DD format.")
+    else:
+        p_date = datetime.now(timezone.utc).date()
+
+    method = (req.payment_method or "Cash").strip()
+    status_val = (req.payment_status or "Paid").strip()
+
+    # Validate digital transaction reference
+    ref_val = req.transaction_reference.strip() if req.transaction_reference else None
+    if method in ["UPI", "Bank Transfer"] and status_val == "Paid" and not ref_val:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Transaction reference is required for digital payments via {method}."
+        )
+
+    # Check for duplicate digital reference
+    if ref_val:
+        existing_ref = db.query(PaymentModel).filter(PaymentModel.transaction_reference == ref_val).first()
+        if existing_ref:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Transaction reference '{ref_val}' has already been recorded for payment {existing_ref.transaction_id}."
+            )
+
+    today_str = datetime.now().strftime("%Y%m%d")
+    unique_suffix = uuid.uuid4().hex[:6].upper()
+    txn_id = f"TXN-{today_str}-{unique_suffix}"
+    rcp_no = f"RCP-{today_str}-{unique_suffix}"
+
+    now_utc = datetime.now(timezone.utc)
+    verified_by_id = current_user.id if status_val.lower() == "paid" else None
+    verified_at_dt = now_utc if status_val.lower() == "paid" else None
+
+    payment = PaymentModel(
+        transaction_id=txn_id,
+        receipt_number=rcp_no,
+        voter_id=voter.id,
+        voter_entry_id=req.voter_entry_id,
+        mobile_number=clean_mobile,
+        amount=req.amount,
+        payment_date=p_date,
+        payment_method=method,
+        payment_status=status_val,
+        transaction_reference=ref_val,
+        remarks=req.remarks.strip() if req.remarks else None,
+        created_by=current_user.id,
+        verified_by=verified_by_id,
+        verified_at=verified_at_dt,
+        created_at=now_utc,
+        updated_at=now_utc
+    )
+    db.add(payment)
+    db.flush()
+
+    # Record Audit Log
+    db.add(PaymentAuditLogModel(
+        payment_id=payment.id,
+        action="CREATED",
+        new_values=payment.to_dict(),
+        reason="Payment registered into system",
+        performed_by=current_user.id,
+        performed_at=now_utc
+    ))
+
+    db.commit()
+    db.refresh(payment)
+
+    return {
+        "status": "success",
+        "message": f"Payment {payment.transaction_id} recorded successfully.",
+        "payment": payment.to_dict()
+    }
+
+@app.get("/api/payments/voters/search", tags=["Payments Dashboard"])
+def search_voters_for_payments(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """
+    Search voters by EPIC number, name, house number, area, or mobile number
+    and return voter details with financial summaries.
+    """
+    term = q.strip()
+    query = (
+        db.query(VoterRecordModel)
+        .outerjoin(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+        .outerjoin(VoterEntryModel, VoterRecordModel.id == VoterEntryModel.voter_id)
+        .filter(
+            or_(
+                VoterRecordModel.voter_id.ilike(f"%{term}%"),
+                VoterRecordModel.voter_name.ilike(f"%{term}%"),
+                VoterRecordModel.house_no.ilike(f"%{term}%"),
+                DocumentModel.area.ilike(f"%{term}%"),
+                VoterEntryModel.mobile_number.ilike(f"%{term}%")
+            )
+        )
+        .distinct()
+        .limit(limit)
+    )
+
+    voters = query.all()
+    return [v.to_dict() for v in voters]
+
+@app.get("/api/payments/voters/{voter_id}/history", tags=["Payments Dashboard"])
+def get_voter_payments_history(
+    voter_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Returns complete payment history and ledger totals for a selected voter."""
+    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == voter_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter not found.")
+
+    payments = (
+        db.query(PaymentModel)
+        .filter(PaymentModel.voter_id == voter_id)
+        .order_by(PaymentModel.payment_date.desc(), PaymentModel.id.desc())
+        .all()
+    )
+
+    entries = (
+        db.query(VoterEntryModel)
+        .filter(VoterEntryModel.voter_id == voter_id)
+        .order_by(VoterEntryModel.entry_date.desc())
+        .all()
+    )
+
+    total_paid = sum(float(p.amount or 0) for p in payments if p.payment_status.lower() == "paid")
+    total_pending = sum(float(p.amount or 0) for p in payments if p.payment_status.lower() == "pending")
+    total_refunded = sum(float(p.amount or 0) for p in payments if p.payment_status.lower() == "refunded")
+    total_entered = sum(float(e.amount or 0) for e in entries)
+
+    return {
+        "voter": voter.to_dict(),
+        "summary": {
+            "total_paid": total_paid,
+            "total_pending": total_pending,
+            "total_refunded": total_refunded,
+            "total_entered_amount": total_entered,
+            "payments_count": len(payments),
+            "entries_count": len(entries)
+        },
+        "payments": [p.to_dict() for p in payments],
+        "entries": [e.to_dict() for e in entries]
+    }
+
+@app.get("/api/payments/reports", tags=["Payments Dashboard"])
+def get_payments_reports(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    district: Optional[str] = None,
+    constituency: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Calculates multi-dimensional financial reports."""
+    query = _build_payments_query(
+        db=db,
+        from_date=from_date,
+        to_date=to_date,
+        district=district,
+        constituency=constituency
+    )
+
+    total_amount = db.query(func.coalesce(func.sum(PaymentModel.amount), 0)).filter(PaymentModel.id.in_(query.with_entities(PaymentModel.id))).scalar() or 0.0
+    paid_amount = db.query(func.coalesce(func.sum(PaymentModel.amount), 0)).filter(
+        PaymentModel.id.in_(query.with_entities(PaymentModel.id)),
+        func.lower(PaymentModel.payment_status) == "paid"
+    ).scalar() or 0.0
+    pending_amount = db.query(func.coalesce(func.sum(PaymentModel.amount), 0)).filter(
+        PaymentModel.id.in_(query.with_entities(PaymentModel.id)),
+        func.lower(PaymentModel.payment_status) == "pending"
+    ).scalar() or 0.0
+    total_count = query.count()
+
+    # Breakdown by method
+    method_data = (
+        db.query(
+            PaymentModel.payment_method,
+            func.count(PaymentModel.id),
+            func.coalesce(func.sum(PaymentModel.amount), 0)
+        )
+        .filter(PaymentModel.id.in_(query.with_entities(PaymentModel.id)))
+        .group_by(PaymentModel.payment_method)
+        .all()
+    )
+
+    # Breakdown by status
+    status_data = (
+        db.query(
+            PaymentModel.payment_status,
+            func.count(PaymentModel.id),
+            func.coalesce(func.sum(PaymentModel.amount), 0)
+        )
+        .filter(PaymentModel.id.in_(query.with_entities(PaymentModel.id)))
+        .group_by(PaymentModel.payment_status)
+        .all()
+    )
+
+    return {
+        "report_generated_at": datetime.now(timezone.utc).isoformat(),
+        "filters": {
+            "from_date": from_date,
+            "to_date": to_date,
+            "district": district,
+            "constituency": constituency
+        },
+        "summary": {
+            "total_count": total_count,
+            "total_amount": float(total_amount),
+            "paid_amount": float(paid_amount),
+            "pending_amount": float(pending_amount),
+            "paid_percentage": round(float(paid_amount) / float(total_amount) * 100, 1) if float(total_amount) > 0 else 0.0
+        },
+        "by_method": [
+            {"method": r[0], "count": int(r[1]), "amount": float(r[2])} for r in method_data
+        ],
+        "by_status": [
+            {"status": r[0], "count": int(r[1]), "amount": float(r[2])} for r in status_data
+        ]
+    }
+
+@app.get("/api/payments/export", tags=["Payments Dashboard"])
+def export_payments(
+    format: str = Query("csv", regex="^(csv|excel|xlsx)$"),
+    q: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    district: Optional[str] = None,
+    constituency: Optional[str] = None,
+    area: Optional[str] = None,
+    ward: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    payment_method: Optional[str] = None,
+    created_by: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Export filtered payment transactions to CSV or formatted Excel (.xlsx)."""
+    query = _build_payments_query(
+        db=db,
+        q=q,
+        from_date=from_date,
+        to_date=to_date,
+        district=district,
+        constituency=constituency,
+        area=area,
+        ward=ward,
+        payment_status=payment_status,
+        payment_method=payment_method,
+        created_by=created_by
+    ).order_by(PaymentModel.payment_date.desc(), PaymentModel.id.desc())
+
+    payments = query.all()
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if format.lower() == "csv":
+        output = StringIO()
+        # Write UTF-8 BOM so Excel opens Telugu scripts properly
+        output.write('\ufeff')
+        writer = csv.writer(output)
+
+        writer.writerow([
+            "S.No.",
+            "Transaction ID",
+            "Receipt Number",
+            "Voter ID / EPIC",
+            "Voter Name (ఓటరు పేరు)",
+            "Relative Name (సంబంధీకుని పేరు)",
+            "Mobile Number",
+            "District (జిల్లా)",
+            "Constituency (నియోజకవర్గం)",
+            "Area / Village (గ్రామం/ప్రాంతం)",
+            "House No",
+            "Amount (₹)",
+            "Payment Date",
+            "Payment Method",
+            "Payment Status",
+            "Transaction Reference",
+            "Remarks",
+            "Created By",
+            "Verified By"
+        ])
+
+        for idx, p in enumerate(payments, start=1):
+            d = p.to_dict()
+            writer.writerow([
+                idx,
+                d["transaction_id"],
+                d["receipt_number"],
+                d["epic_no"],
+                d["voter_name"],
+                d["relation_name"],
+                d["mobile_number"],
+                d["district"],
+                d["constituency"],
+                d["area"],
+                d["house_no"],
+                f"{d['amount']:.2f}",
+                d["payment_date"],
+                d["payment_method"],
+                d["payment_status"],
+                d["transaction_reference"],
+                d["remarks"],
+                d["creator_name"],
+                d["verifier_name"] or "N/A"
+            ])
+
+        output.seek(0)
+        filename = f"vms_payments_{timestamp}.csv"
+        return StreamingResponse(
+            iter([output.getvalue().encode("utf-8-sig")]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    else:
+        # Excel (.xlsx) generation using openpyxl
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "VMS Payments Ledger"
+
+        # Styles
+        header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid") # Dark Blue
+        border_thin = Border(
+            left=Side(style='thin', color='CBD5E1'),
+            right=Side(style='thin', color='CBD5E1'),
+            top=Side(style='thin', color='CBD5E1'),
+            bottom=Side(style='thin', color='CBD5E1')
+        )
+        currency_format = '₹#,##0.00'
+
+        headers = [
+            "S.No.",
+            "Transaction ID",
+            "Receipt No",
+            "Voter ID / EPIC",
+            "Voter Name",
+            "Relative Name",
+            "Mobile Number",
+            "District",
+            "Constituency",
+            "Area / Village",
+            "House No",
+            "Amount (INR)",
+            "Payment Date",
+            "Payment Method",
+            "Payment Status",
+            "Transaction Reference",
+            "Remarks",
+            "Recorded By",
+            "Verified By"
+        ]
+
+        ws.append(headers)
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        total_amount = 0.0
+        for idx, p in enumerate(payments, start=1):
+            d = p.to_dict()
+            amt = float(d["amount"] or 0.0)
+            total_amount += amt
+
+            row_data = [
+                idx,
+                d["transaction_id"],
+                d["receipt_number"],
+                d["epic_no"],
+                d["voter_name"],
+                d["relation_name"],
+                d["mobile_number"],
+                d["district"],
+                d["constituency"],
+                d["area"],
+                d["house_no"],
+                amt,
+                d["payment_date"],
+                d["payment_method"],
+                d["payment_status"],
+                d["transaction_reference"],
+                d["remarks"],
+                d["creator_name"],
+                d["verifier_name"] or "N/A"
+            ]
+            ws.append(row_data)
+
+            # Style row
+            row_idx = idx + 1
+            for col_idx in range(1, len(headers) + 1):
+                c = ws.cell(row=row_idx, column=col_idx)
+                c.border = border_thin
+                if col_idx == 12:
+                    c.number_format = currency_format
+
+        # Total Summary Row
+        summary_row = ws.max_row + 1
+        ws.cell(row=summary_row, column=11, value="TOTAL:")
+        ws.cell(row=summary_row, column=11).font = Font(name="Calibri", size=11, bold=True)
+        total_cell = ws.cell(row=summary_row, column=12, value=total_amount)
+        total_cell.font = Font(name="Calibri", size=11, bold=True)
+        total_cell.number_format = currency_format
+
+        # Auto adjust column widths
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+        file_stream = BytesIO()
+        wb.save(file_stream)
+        file_stream.seek(0)
+
+        filename = f"vms_payments_{timestamp}.xlsx"
+        return StreamingResponse(
+            file_stream,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+@app.get("/api/payments/{payment_id}", tags=["Payments Dashboard"])
+def get_payment_detail(
+    payment_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Retrieve full payment details with audit trail."""
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found.")
+
+    res = payment.to_dict()
+    res["audit_logs"] = [log.to_dict() for log in payment.audit_logs]
+    return res
+
+@app.put("/api/payments/{payment_id}", tags=["Payments Dashboard"])
+def update_payment(
+    payment_id: int,
+    req: PaymentUpdateRequest,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update payment record with audit logging."""
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found.")
+
+    if payment.payment_status in ["Cancelled", "Refunded"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot edit payment {payment.transaction_id} because it has already been {payment.payment_status}."
+        )
+
+    old_state = payment.to_dict()
+    changes = []
+
+    if req.mobile_number is not None:
+        clean_mobile = re.sub(r"\D", "", req.mobile_number)
+        if len(clean_mobile) > 10 and clean_mobile.startswith("91"):
+            clean_mobile = clean_mobile[2:]
+        if len(clean_mobile) != 10:
+            raise HTTPException(status_code=400, detail="Mobile number must be a valid 10-digit number.")
+        if payment.mobile_number != clean_mobile:
+            changes.append(f"mobile: {payment.mobile_number} -> {clean_mobile}")
+            payment.mobile_number = clean_mobile
+
+    if req.amount is not None:
+        if req.amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be greater than zero.")
+        if float(payment.amount) != float(req.amount):
+            changes.append(f"amount: {payment.amount} -> {req.amount}")
+            payment.amount = req.amount
+
+    if req.payment_date is not None:
+        try:
+            d_val = datetime.strptime(req.payment_date, "%Y-%m-%d").date()
+            if payment.payment_date != d_val:
+                changes.append(f"date: {payment.payment_date} -> {d_val}")
+                payment.payment_date = d_val
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD.")
+
+    if req.payment_method is not None:
+        if payment.payment_method != req.payment_method:
+            changes.append(f"method: {payment.payment_method} -> {req.payment_method}")
+            payment.payment_method = req.payment_method
+
+    if req.transaction_reference is not None:
+        new_ref = req.transaction_reference.strip() if req.transaction_reference else None
+        if payment.transaction_reference != new_ref:
+            changes.append(f"reference: {payment.transaction_reference} -> {new_ref}")
+            payment.transaction_reference = new_ref
+
+    if req.remarks is not None:
+        payment.remarks = req.remarks.strip() if req.remarks else None
+
+    payment.updated_by = current_user.id
+    payment.updated_at = datetime.now(timezone.utc)
+
+    db.add(PaymentAuditLogModel(
+        payment_id=payment.id,
+        action="UPDATED",
+        old_values=old_state,
+        new_values=payment.to_dict(),
+        reason=f"Edited fields: {', '.join(changes)}" if changes else "Updated remarks",
+        performed_by=current_user.id,
+        performed_at=payment.updated_at
+    ))
+
+    db.commit()
+    db.refresh(payment)
+
+    return {
+        "status": "success",
+        "message": "Payment updated successfully.",
+        "payment": payment.to_dict()
+    }
+
+@app.post("/api/payments/{payment_id}/verify", tags=["Payments Dashboard"])
+def verify_payment(
+    payment_id: int,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Transition payment from Pending to Paid with verification audit trail."""
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found.")
+
+    if payment.payment_status.lower() == "paid":
+        raise HTTPException(status_code=400, detail="Payment is already marked as Paid.")
+
+    if payment.payment_status in ["Cancelled", "Refunded"]:
+        raise HTTPException(status_code=400, detail=f"Cannot verify a {payment.payment_status} payment.")
+
+    old_state = payment.to_dict()
+    now_utc = datetime.now(timezone.utc)
+
+    payment.payment_status = "Paid"
+    payment.verified_by = current_user.id
+    payment.verified_at = now_utc
+    payment.updated_by = current_user.id
+    payment.updated_at = now_utc
+
+    db.add(PaymentAuditLogModel(
+        payment_id=payment.id,
+        action="VERIFIED",
+        old_values=old_state,
+        new_values=payment.to_dict(),
+        reason=f"Payment verified and confirmed as Paid by @{current_user.username}",
+        performed_by=current_user.id,
+        performed_at=now_utc
+    ))
+
+    db.commit()
+    db.refresh(payment)
+
+    return {
+        "status": "success",
+        "message": f"Payment {payment.transaction_id} verified as Paid.",
+        "payment": payment.to_dict()
+    }
+
+@app.post("/api/payments/{payment_id}/cancel", tags=["Payments Dashboard"])
+def cancel_payment(
+    payment_id: int,
+    req: PaymentActionReasonRequest,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Cancel payment with mandatory reason."""
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found.")
+
+    if payment.payment_status == "Cancelled":
+        raise HTTPException(status_code=400, detail="Payment is already Cancelled.")
+
+    if payment.payment_status == "Refunded":
+        raise HTTPException(status_code=400, detail="Cannot cancel a refunded payment.")
+
+    if not req.reason or len(req.reason.strip()) < 3:
+        raise HTTPException(status_code=400, detail="A valid cancellation reason is required.")
+
+    old_state = payment.to_dict()
+    now_utc = datetime.now(timezone.utc)
+
+    payment.payment_status = "Cancelled"
+    payment.updated_by = current_user.id
+    payment.updated_at = now_utc
+
+    db.add(PaymentAuditLogModel(
+        payment_id=payment.id,
+        action="CANCELLED",
+        old_values=old_state,
+        new_values=payment.to_dict(),
+        reason=req.reason.strip(),
+        performed_by=current_user.id,
+        performed_at=now_utc
+    ))
+
+    db.commit()
+    db.refresh(payment)
+
+    return {
+        "status": "success",
+        "message": f"Payment {payment.transaction_id} marked as Cancelled.",
+        "payment": payment.to_dict()
+    }
+
+@app.post("/api/payments/{payment_id}/refund", tags=["Payments Dashboard"])
+def refund_payment(
+    payment_id: int,
+    req: PaymentActionReasonRequest,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Refund payment with mandatory reason. Only Paid transactions can be refunded."""
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found.")
+
+    if payment.payment_status.lower() != "paid":
+        raise HTTPException(status_code=400, detail="Only verified 'Paid' transactions can be refunded.")
+
+    if not req.reason or len(req.reason.strip()) < 3:
+        raise HTTPException(status_code=400, detail="A valid refund reason is required.")
+
+    old_state = payment.to_dict()
+    now_utc = datetime.now(timezone.utc)
+
+    payment.payment_status = "Refunded"
+    payment.updated_by = current_user.id
+    payment.updated_at = now_utc
+
+    db.add(PaymentAuditLogModel(
+        payment_id=payment.id,
+        action="REFUNDED",
+        old_values=old_state,
+        new_values=payment.to_dict(),
+        reason=req.reason.strip(),
+        performed_by=current_user.id,
+        performed_at=now_utc
+    ))
+
+    db.commit()
+    db.refresh(payment)
+
+    return {
+        "status": "success",
+        "message": f"Payment {payment.transaction_id} refunded successfully.",
+        "payment": payment.to_dict()
+    }
+
+@app.delete("/api/payments/{payment_id}", tags=["Payments Dashboard"])
+def delete_payment(
+    payment_id: int,
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Permanently delete payment record (Administrator only, audited)."""
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found.")
+
+    db.add(AuditLogModel(
+        user_id=current_user.id,
+        action="DELETE_PAYMENT",
+        details=f"Deleted payment ID {payment.id} (Txn: {payment.transaction_id}, Amount: ₹{payment.amount}, Voter: {payment.voter.voter_name if payment.voter else 'N/A'})",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+
+    db.delete(payment)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Payment record {payment_id} deleted successfully.",
+        "id": payment_id
+    }
+
+@app.get("/api/payments/{payment_id}/receipt", tags=["Payments Dashboard"])
+def get_payment_receipt(
+    payment_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """
+    Generate complete official receipt data for printing and PDF generation.
+    Does not mark Pending or Failed as Paid.
+    """
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found.")
+
+    voter = payment.voter
+    doc = voter.document if voter else None
+
+    # Determine Receipt Type and Watermark
+    status_lower = payment.payment_status.lower()
+    if status_lower == "paid":
+        receipt_title = "OFFICIAL PAYMENT RECEIPT"
+        watermark = "PAID"
+        is_paid = True
+    elif status_lower == "pending":
+        receipt_title = "PAYMENT ACKNOWLEDGEMENT (PENDING VERIFICATION)"
+        watermark = "PENDING"
+        is_paid = False
+    elif status_lower == "cancelled":
+        receipt_title = "VOID PAYMENT VOUCHER (CANCELLED)"
+        watermark = "VOID"
+        is_paid = False
+    elif status_lower == "refunded":
+        receipt_title = "OFFICIAL REFUND VOUCHER"
+        watermark = "REFUNDED"
+        is_paid = False
+    else:
+        receipt_title = "TRANSACTION ACKNOWLEDGEMENT"
+        watermark = payment.payment_status.upper()
+        is_paid = False
+
+    amount_val = float(payment.amount or 0.0)
+    words = number_to_words_inr(amount_val)
+
+    return {
+        "receipt_number": payment.receipt_number,
+        "transaction_id": payment.transaction_id,
+        "receipt_title": receipt_title,
+        "watermark": watermark,
+        "is_paid": is_paid,
+        "payment_status": payment.payment_status,
+        "payment_date": payment.payment_date.isoformat(),
+        "issued_at": datetime.now(timezone.utc).strftime("%d-%b-%Y %I:%M %p"),
+        "amount": amount_val,
+        "amount_formatted": f"₹{amount_val:,.2f}",
+        "amount_in_words": words,
+        "payment_method": payment.payment_method,
+        "transaction_reference": payment.transaction_reference or "N/A",
+        "remarks": payment.remarks or "",
+        "voter": {
+            "id": voter.id if voter else None,
+            "voter_name": voter.voter_name if voter else "Not Available",
+            "epic_no": voter.voter_id if voter else "Not Available",
+            "relation_name": voter.relation_name if voter else "Not Available",
+            "relation_type": voter.relation_type if voter else "Not Available",
+            "age": voter.age if voter else "Not Available",
+            "gender": voter.gender if voter else "Not Available",
+            "house_no": voter.house_no if voter else "Not Available",
+            "serial_no": voter.serial_no if voter else "Not Available",
+            "mobile_number": payment.mobile_number,
+            "district": getattr(doc, "district", None) or "Not Available",
+            "constituency": getattr(doc, "constituency", None) or "Not Available",
+            "area": getattr(doc, "area", None) or "Not Available",
+            "ward_number": getattr(doc, "ward_number", None) or "Not Available",
+        },
+        "creator": {
+            "name": payment.creator.full_name if payment.creator else "System",
+            "username": payment.creator.username if payment.creator else "system",
+        },
+        "verifier": {
+            "name": payment.verifier.full_name if payment.verifier else None,
+            "username": payment.verifier.username if payment.verifier else None,
+            "verified_at": payment.verified_at.strftime("%d-%b-%Y %I:%M %p") if payment.verified_at else None,
+        },
+        "organization": {
+            "name": "VMS – Voter Management System",
+            "telugu_name": "ఓటర్ మేనేజ్‌మెంట్ సిస్టమ్",
+            "tagline": "Smart Voter Data Extraction & Management System",
+            "jurisdiction": "Electoral Roll Management & Voter Services",
+        },
+        "disclaimer": "This is an official computer-generated receipt from the Voter Management System (VMS). Valid without physical signature when verified."
+    }
+
+# -------------------------------------------------------------
+# 16. Complete RBAC APIs (Roles, Permissions, User Mapping, Audit)
+# -------------------------------------------------------------
+
+@app.get("/api/rbac/roles", tags=["RBAC Module"])
+def list_rbac_roles(
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all system and custom roles with their assigned permissions and user counts."""
+    roles = db.query(RoleModel).order_by(RoleModel.id.asc()).all()
+    return [r.to_dict(include_permissions=True) for r in roles]
+
+@app.post("/api/rbac/roles", status_code=status.HTTP_201_CREATED, tags=["RBAC Module"])
+def create_rbac_role(
+    req: RoleCreateRequest,
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Create a new custom role with specified permissions. Administrator only."""
+    clean_name = req.role_name.strip().lower()
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Role name is required.")
+
+    existing = db.query(RoleModel).filter(RoleModel.role_name.ilike(clean_name)).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Role with name '{clean_name}' already exists.")
+
+    new_role = RoleModel(
+        role_name=clean_name,
+        description=req.description.strip() if req.description else None,
+        is_system=False,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc)
+    )
+    db.add(new_role)
+    db.flush()
+
+    if req.permission_codes:
+        perms = db.query(PermissionModel).filter(PermissionModel.code.in_(req.permission_codes)).all()
+        for p in perms:
+            db.add(RolePermissionModel(role_id=new_role.id, permission_id=p.id, created_at=datetime.now(timezone.utc)))
+
+    db.add(AuditLogModel(
+        user_id=current_user.id,
+        action="CREATE_ROLE",
+        details=f"Created custom role '{clean_name}' with {len(req.permission_codes)} permission(s).",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+    db.refresh(new_role)
+
+    return {
+        "status": "success",
+        "message": f"Role '{clean_name}' created successfully.",
+        "role": new_role.to_dict(include_permissions=True)
+    }
+
+@app.get("/api/rbac/roles/{role_id}", tags=["RBAC Module"])
+def get_rbac_role(role_id: int, db: Session = Depends(get_db)):
+    role = db.query(RoleModel).filter(RoleModel.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found.")
+    return role.to_dict(include_permissions=True)
+
+@app.put("/api/rbac/roles/{role_id}", tags=["RBAC Module"])
+def update_rbac_role(
+    role_id: int,
+    req: RoleUpdateRequest,
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Update role description and assigned permissions. Cannot downgrade Administrator role."""
+    role = db.query(RoleModel).filter(RoleModel.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found.")
+
+    if role.role_name.lower() == "admin":
+        if req.permission_codes is not None and len(req.permission_codes) < db.query(PermissionModel).count():
+            raise HTTPException(status_code=400, detail="Administrator system role permissions cannot be removed.")
+
+    if req.description is not None:
+        role.description = req.description.strip() if req.description else None
+
+    if req.permission_codes is not None:
+        db.query(RolePermissionModel).filter(RolePermissionModel.role_id == role.id).delete()
+        perms = db.query(PermissionModel).filter(PermissionModel.code.in_(req.permission_codes)).all()
+        for p in perms:
+            db.add(RolePermissionModel(role_id=role.id, permission_id=p.id, created_at=datetime.now(timezone.utc)))
+
+    role.updated_at = datetime.now(timezone.utc)
+
+    db.add(AuditLogModel(
+        user_id=current_user.id,
+        action="UPDATE_ROLE_PERMISSIONS",
+        details=f"Updated role '{role.role_name}' permissions.",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+    db.refresh(role)
+
+    return {
+        "status": "success",
+        "message": f"Role '{role.role_name}' updated successfully.",
+        "role": role.to_dict(include_permissions=True)
+    }
+
+@app.delete("/api/rbac/roles/{role_id}", tags=["RBAC Module"])
+def delete_rbac_role(
+    role_id: int,
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Delete a custom role. System roles cannot be deleted."""
+    role = db.query(RoleModel).filter(RoleModel.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found.")
+
+    if role.is_system or role.role_name.lower() in ["admin", "operator", "viewer", "user"]:
+        raise HTTPException(status_code=400, detail=f"System role '{role.role_name}' cannot be deleted.")
+
+    assigned_count = len(role.user_roles) if role.user_roles else 0
+    if assigned_count > 0:
+        raise HTTPException(status_code=400, detail=f"Cannot delete role '{role.role_name}'. It is assigned to {assigned_count} user(s).")
+
+    role_name = role.role_name
+    db.delete(role)
+
+    db.add(AuditLogModel(
+        user_id=current_user.id,
+        action="DELETE_ROLE",
+        details=f"Deleted custom role '{role_name}'.",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Role '{role_name}' deleted successfully.",
+        "id": role_id
+    }
+
+@app.get("/api/rbac/permissions", tags=["RBAC Module"])
+def list_rbac_permissions(db: Session = Depends(get_db)):
+    """List all available permissions grouped by module."""
+    perms = db.query(PermissionModel).order_by(PermissionModel.module.asc(), PermissionModel.action.asc()).all()
+    grouped = {}
+    for p in perms:
+        if p.module not in grouped:
+            grouped[p.module] = []
+        grouped[p.module].append(p.to_dict())
+    return {
+        "permissions": [p.to_dict() for p in perms],
+        "grouped": grouped
+    }
+
+@app.get("/api/rbac/users", tags=["RBAC Module"])
+def list_rbac_users(
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """List all users with their assigned roles and effective permissions."""
+    users = db.query(UserModel).order_by(UserModel.id.asc()).all()
+    result = []
+    for u in users:
+        u_dict = u.to_dict()
+        u_dict["effective_permissions"] = list(get_user_permissions(u, db))
+        result.append(u_dict)
+    return result
+
+@app.post("/api/rbac/users/{user_id}/roles", tags=["RBAC Module"])
+def assign_user_role(
+    user_id: int,
+    req: UserRoleAssignRequest,
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Assign or change a user's role. Administrator only."""
+    user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    target_role = db.query(RoleModel).filter(RoleModel.role_name.ilike(req.role_name.strip())).first()
+    if not target_role:
+        raise HTTPException(status_code=404, detail=f"Role '{req.role_name}' does not exist.")
+
+    if user.role.lower() == "admin" and target_role.role_name.lower() != "admin":
+        admin_count = db.query(UserModel).filter(UserModel.role == "admin", UserModel.is_active == True).count()
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot downgrade the only active Administrator account.")
+
+    old_role = user.role
+    user.role = target_role.role_name.lower()
+    user.updated_at = datetime.now(timezone.utc)
+
+    db.query(UserRoleModel).filter(UserRoleModel.user_id == user.id).delete()
+    db.add(UserRoleModel(user_id=user.id, role_id=target_role.id, created_at=datetime.now(timezone.utc)))
+
+    db.add(AuditLogModel(
+        user_id=current_user.id,
+        action="ASSIGN_USER_ROLE",
+        details=f"Changed user '{user.username}' role from '{old_role}' to '{target_role.role_name}'.",
+        ip_address="127.0.0.1",
+        created_at=datetime.now(timezone.utc)
+    ))
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "status": "success",
+        "message": f"User '{user.username}' assigned to role '{target_role.role_name}'.",
+        "user": user.to_dict()
+    }
+
+@app.get("/api/rbac/my-permissions", tags=["RBAC Module"])
+def get_my_permissions(
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Return effective permissions and roles for current user to control frontend UI actions."""
+    perms = get_user_permissions(current_user, db)
+    return {
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "role": current_user.role,
+        "is_admin": current_user.role.lower() == "admin",
+        "permissions": sorted(list(perms))
+    }
+
+@app.get("/api/rbac/audit-logs", tags=["RBAC Module"])
+def get_audit_logs(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Return recent audit logs for role and permission changes."""
+    logs = db.query(AuditLogModel).order_by(desc(AuditLogModel.created_at)).limit(limit).all()
+    return [l.to_dict() for l in logs]

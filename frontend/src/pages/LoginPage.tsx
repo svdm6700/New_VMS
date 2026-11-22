@@ -168,7 +168,7 @@ export const LoginPage: React.FC = () => {
                   required
                   value={usernameOrEmail}
                   onChange={(e) => setUsernameOrEmail(e.target.value)}
-                  placeholder="admin or admin@telugupdf.com"
+                  placeholder="admin or admin@gmail.com"
                   className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all"
                 />
               </div>
@@ -243,31 +243,6 @@ export const LoginPage: React.FC = () => {
               )}
             </button>
           </form>
-
-          {/* Quick Demo Credentials */}
-          <div className="mt-8 pt-6 border-t border-slate-100 dark:border-slate-800">
-            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider text-center mb-3">
-              Default Credentials
-            </p>
-            <div className="space-y-2">
-              <button
-                type="button"
-                onClick={() => fillCredentials('admin', 'Admin@12345')}
-                className="w-full p-2.5 bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-left flex items-center justify-between group transition-all"
-              >
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200">Admin Account</span>
-                    <span className="px-1.5 py-0.5 text-[9px] font-bold bg-purple-100 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300 rounded">
-                      Full Access
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">admin · Admin@12345</p>
-                </div>
-                <ArrowRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-brand-600 transition-colors" />
-              </button>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -316,7 +291,7 @@ export const LoginPage: React.FC = () => {
                   required
                   value={forgotEmail}
                   onChange={(e) => setForgotEmail(e.target.value)}
-                  placeholder="admin@telugupdf.com"
+                  placeholder="admin@gmail.com"
                   className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
                 />
               </div>

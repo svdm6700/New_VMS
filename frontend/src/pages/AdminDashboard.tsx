@@ -245,7 +245,7 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               </div>
               <Link
-                to="/documents"
+                to="/extracted-data"
                 className="text-xs font-bold text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-1"
               >
                 <span>View all</span>
