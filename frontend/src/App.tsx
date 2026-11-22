@@ -22,7 +22,6 @@ import { WalletManagement } from './pages/WalletManagement';
 import { MyWalletPage } from './pages/MyWalletPage';
 import { Settings } from './pages/Settings';
 import { ConstituencyManagement } from './pages/ConstituencyManagement';
-import { WardManagement } from './pages/WardManagement';
 import { UserAssignmentsPage } from './pages/UserAssignmentsPage';
 import { ReportsExportPage } from './pages/ReportsExportPage';
 import { VoterVerificationPage } from './pages/VoterVerificationPage';
@@ -141,11 +140,7 @@ function AppLayout() {
             />
             <Route
               path="/ward-management"
-              element={
-                <ProtectedRoute allowedRoles={['super_admin']}>
-                  <WardManagement />
-                </ProtectedRoute>
-              }
+              element={<Navigate to="/constituency-management?tab=wards" replace />}
             />
 
             {/* User Geographic Assignments (Super Admin & Admin) */}

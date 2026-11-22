@@ -16,8 +16,7 @@ import {
   FolderTree,
   ChevronRight,
   ChevronDown,
-  ArrowRight,
-  Check
+  ArrowRight
 } from 'lucide-react';
 import { geoService, District, Constituency, Ward } from '../services/geoService';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
