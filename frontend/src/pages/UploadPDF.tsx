@@ -20,6 +20,8 @@ import { FileUpload } from '../components/upload/FileUpload';
 import { UploadProgress } from '../components/upload/UploadProgress';
 import { documentService } from '../services/documentService';
 import { useDocuments } from '../contexts/DocumentContext';
+import { geoService } from '../services/geoService';
+import { useAuth } from '../contexts/AuthContext';
 
 export const UploadPDF: React.FC = () => {
   const navigate = useNavigate();
@@ -33,6 +35,31 @@ export const UploadPDF: React.FC = () => {
   const [constituency, setConstituency] = useState('');
   const [area, setArea] = useState('');
   const [wardNumber, setWardNumber] = useState('');
+
+  const [availableLocations, setAvailableLocations] = useState<{
+    districts: string[];
+    constituencies: string[];
+    wards: string[];
+  }>({
+    districts: [],
+    constituencies: [],
+    wards: [],
+  });
+
+  React.useEffect(() => {
+    geoService.getLocations().then((locs) => {
+      setAvailableLocations(locs);
+      if (locs.districts.length === 1 && !district) {
+        setDistrict(locs.districts[0]);
+      }
+      if (locs.constituencies.length === 1 && !constituency) {
+        setConstituency(locs.constituencies[0]);
+      }
+      if (locs.wards.length === 1 && !wardNumber) {
+        setWardNumber(locs.wards[0]);
+      }
+    }).catch((e) => console.warn('Could not fetch locations:', e));
+  }, []);
 
   // Touched state for field-specific error display
   const [touched, setTouched] = useState({
@@ -213,19 +240,25 @@ export const UploadPDF: React.FC = () => {
               <div className="relative">
                 <input
                   type="text"
+                  list="districts-list"
                   value={district}
                   onChange={(e) => {
                     setDistrict(e.target.value);
                     if (!touched.district) setTouched((t) => ({ ...t, district: true }));
                   }}
                   onBlur={() => setTouched((t) => ({ ...t, district: true }))}
-                  placeholder="Enter district name (జిల్లా) manually"
+                  placeholder="Enter or select district name (జిల్లా)"
                   className={`w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all ${
                     touched.district && !isDistrictValid
                       ? 'border-rose-400 focus:ring-rose-500/20'
                       : 'border-slate-200 dark:border-slate-700 focus:ring-brand-500/20 focus:border-brand-500'
                   }`}
                 />
+                <datalist id="districts-list">
+                  {availableLocations.districts.map((d) => (
+                    <option key={d} value={d} />
+                  ))}
+                </datalist>
               </div>
               {touched.district && !isDistrictValid && (
                 <p className="text-[11px] text-rose-500 mt-1 flex items-center gap-1">
@@ -243,19 +276,25 @@ export const UploadPDF: React.FC = () => {
               <div className="relative">
                 <input
                   type="text"
+                  list="constituencies-list"
                   value={constituency}
                   onChange={(e) => {
                     setConstituency(e.target.value);
                     if (!touched.constituency) setTouched((t) => ({ ...t, constituency: true }));
                   }}
                   onBlur={() => setTouched((t) => ({ ...t, constituency: true }))}
-                  placeholder="Enter constituency name (నియోజకవర్గం) manually"
+                  placeholder="Enter or select constituency (నియోజకవర్గం)"
                   className={`w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all ${
                     touched.constituency && !isConstituencyValid
                       ? 'border-rose-400 focus:ring-rose-500/20'
                       : 'border-slate-200 dark:border-slate-700 focus:ring-brand-500/20 focus:border-brand-500'
                   }`}
                 />
+                <datalist id="constituencies-list">
+                  {availableLocations.constituencies.map((c) => (
+                    <option key={c} value={c} />
+                  ))}
+                </datalist>
               </div>
               {touched.constituency && !isConstituencyValid && (
                 <p className="text-[11px] text-rose-500 mt-1 flex items-center gap-1">
@@ -303,19 +342,25 @@ export const UploadPDF: React.FC = () => {
               <div className="relative">
                 <input
                   type="text"
+                  list="wards-list"
                   value={wardNumber}
                   onChange={(e) => {
                     setWardNumber(e.target.value);
                     if (!touched.wardNumber) setTouched((t) => ({ ...t, wardNumber: true }));
                   }}
                   onBlur={() => setTouched((t) => ({ ...t, wardNumber: true }))}
-                  placeholder="Enter ward number (వార్డు నంబర్)"
+                  placeholder="Enter or select ward number (వార్డు నంబర్)"
                   className={`w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all ${
                     touched.wardNumber && !isWardValid
                       ? 'border-rose-400 focus:ring-rose-500/20'
                       : 'border-slate-200 dark:border-slate-700 focus:ring-brand-500/20 focus:border-brand-500'
                   }`}
                 />
+                <datalist id="wards-list">
+                  {availableLocations.wards.map((w) => (
+                    <option key={w} value={w} />
+                  ))}
+                </datalist>
               </div>
               {touched.wardNumber && !isWardValid && (
                 <p className="text-[11px] text-rose-500 mt-1 flex items-center gap-1">

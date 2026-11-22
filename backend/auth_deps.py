@@ -83,18 +83,53 @@ def get_optional_current_user(
     except Exception:
         return None
 
+def is_super_admin(user: UserModel) -> bool:
+    """Check if the user has Super Admin role."""
+    return bool(user and user.role and user.role.lower() in ("super_admin", "superadmin"))
+
+def is_admin(user: UserModel) -> bool:
+    """Check if the user has Admin role (scoped administrator)."""
+    return bool(user and user.role and user.role.lower() == "admin")
+
+def is_admin_or_super(user: UserModel) -> bool:
+    """Check if the user is either a Super Admin or an Admin."""
+    return bool(user and user.role and user.role.lower() in ("super_admin", "superadmin", "admin"))
+
+def require_super_admin(current_user: UserModel = Depends(get_current_user)) -> UserModel:
+    """Dependency to enforce Super Admin role authorization."""
+    if not is_super_admin(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super Administrator privileges are required to perform this action.",
+        )
+    return current_user
+
 def require_admin(current_user: UserModel = Depends(get_current_user)) -> UserModel:
-    """Dependency to enforce Admin role authorization."""
-    if current_user.role.lower() != "admin":
+    """Dependency to enforce Admin or Super Admin role authorization."""
+    if not is_admin_or_super(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrator privileges are required to perform this action.",
         )
     return current_user
 
+def require_roles(allowed_roles: list[str]):
+    """Factory dependency to enforce specific allowed roles."""
+    def dependency(current_user: UserModel = Depends(get_current_user)) -> UserModel:
+        normalized_allowed = [r.lower() for r in allowed_roles]
+        if "super_admin" in normalized_allowed:
+            normalized_allowed.append("superadmin")
+        if current_user.role.lower() not in normalized_allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: This action requires one of the following roles: {', '.join(allowed_roles)}."
+            )
+        return current_user
+    return dependency
+
 def get_user_permissions(user: UserModel, db: Session) -> Set[str]:
     """Retrieve all distinct permission codes assigned to the user through their roles."""
-    if user.role.lower() == "admin":
+    if is_super_admin(user):
         all_perms = db.query(PermissionModel.code).all()
         return {p[0] for p in all_perms}
 
@@ -132,7 +167,7 @@ def require_permission(permission_code: str):
         current_user: UserModel = Depends(get_current_user),
         db: Session = Depends(get_db)
     ) -> UserModel:
-        if current_user.role.lower() == "admin":
+        if is_super_admin(current_user):
             return current_user
 
         user_perms = get_user_permissions(current_user, db)

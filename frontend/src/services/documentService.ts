@@ -155,6 +155,7 @@ export const documentService = {
     limit?: number;
     document_id?: string;
     query?: string;
+    search_unique_id?: string;
     gender?: string;
     district?: string;
     constituency?: string;
@@ -226,5 +227,32 @@ export const documentService = {
     return new Blob([res.data], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
+  },
+
+  // -------------------------------------------------------------
+  // Voter List A4 PDF Generation (27 Voters per Page, 3x9 Grid)
+  // -------------------------------------------------------------
+  async getIndividualVoterPdf(voterId: string | number): Promise<Blob> {
+    const res = await api.get(`/api/voters/${voterId}/pdf`, { responseType: 'blob' });
+    return new Blob([res.data], { type: 'application/pdf' });
+  },
+
+  async getSelectedVotersPdf(voterIds: (string | number)[]): Promise<Blob> {
+    const res = await api.post('/api/voters/pdf/selected', { voter_ids: voterIds }, { responseType: 'blob' });
+    return new Blob([res.data], { type: 'application/pdf' });
+  },
+
+  async getCompleteVoterListPdf(filters?: {
+    district?: string;
+    constituency?: string;
+    ward_number?: string;
+    area?: string;
+    document_id?: string;
+    query?: string;
+    search_unique_id?: string;
+    gender?: string;
+  }): Promise<Blob> {
+    const res = await api.post('/api/voters/pdf/generate', filters || {}, { responseType: 'blob' });
+    return new Blob([res.data], { type: 'application/pdf' });
   },
 };

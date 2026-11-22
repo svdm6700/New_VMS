@@ -19,9 +19,16 @@ frontend/.env
 storage/uploads/*
 storage/temp/*
 storage/exports/*
+storage/photos/*
+storage/results/*
 !storage/uploads/.gitkeep
 !storage/temp/.gitkeep
 !storage/exports/.gitkeep
+!storage/photos/.gitkeep
+!storage/results/.gitkeep
+
+# TypeScript build info
+*.tsbuildinfo
 
 # Logs
 logs/

@@ -8,15 +8,19 @@ import {
   CreditCard,
   Receipt,
   Wallet,
-  DollarSign,
   Settings,
-  Languages,
   X,
   User,
   Users,
   LogOut,
   Shield,
-  LogIn
+  LogIn,
+  Building2,
+  Layers,
+  UserCheck,
+  FileSpreadsheet,
+  Search,
+  FileText
 } from 'lucide-react';
 import { useDocuments } from '../../contexts/DocumentContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -28,7 +32,7 @@ interface AppSidebarProps {
 
 export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
   const { activeDoc } = useDocuments();
-  const { user, isAuthenticated, isAdmin, logout } = useAuth();
+  const { user, isAuthenticated, isSuperAdmin, isAdmin, isUser, logout } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -38,10 +42,17 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
   };
 
   const dashboardPath = isAuthenticated
-    ? isAdmin
-      ? '/admin/dashboard'
-      : '/user/dashboard'
+    ? isUser
+      ? '/user/dashboard'
+      : '/admin/dashboard'
     : '/';
+
+  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+    `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
+      isActive
+        ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
+        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
+    }`;
 
   return (
     <>
@@ -80,9 +91,27 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
           </button>
         </div>
 
-        {/* Active Document Pill (if selected) */}
-        {activeDoc && (
-          <div className="mx-4 mt-3 p-2.5 rounded-xl bg-brand-50/70 dark:bg-brand-950/40 border border-brand-200/60 dark:border-brand-900/50">
+        {/* Role Badge Indicator */}
+        {isAuthenticated && user && (
+          <div className="mx-4 mt-3 px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/60 flex items-center justify-between">
+            <span className="text-3xs uppercase tracking-wider text-slate-400 font-semibold">Role Access</span>
+            <span
+              className={`px-2 py-0.5 rounded text-3xs font-bold uppercase tracking-wider ${
+                isSuperAdmin
+                  ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
+                  : isAdmin
+                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300'
+                  : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+              }`}
+            >
+              {isSuperAdmin ? 'Super Admin' : isAdmin ? 'Admin' : 'Field User'}
+            </span>
+          </div>
+        )}
+
+        {/* Active Document Pill (for Admin / Super Admin) */}
+        {!isUser && activeDoc && (
+          <div className="mx-4 mt-2 p-2.5 rounded-xl bg-brand-50/70 dark:bg-brand-950/40 border border-brand-200/60 dark:border-brand-900/50">
             <div className="flex items-center gap-2 mb-1">
               <span className="w-1.5 h-1.5 rounded-full bg-brand-600 animate-pulse" />
               <span className="text-[10px] font-semibold tracking-wider text-brand-700 dark:text-brand-300 uppercase">
@@ -93,186 +122,193 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
               {activeDoc.metadata?.filename || 'Document'}
             </p>
             <p className="text-[10px] text-slate-500 dark:text-slate-400">
-              {activeDoc.metadata?.page_count || activeDoc.pages?.length || 0} pages · Ready
+              {activeDoc.metadata?.records_count || activeDoc.records?.length || 0} voters · Ready
             </p>
           </div>
         )}
 
         {/* Navigation Items */}
         <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto">
-          {/* Role-based Dashboard */}
-          <NavLink
-            to={dashboardPath}
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <LayoutDashboard className="w-4 h-4 shrink-0" />
-            <span>{isAdmin ? 'VMS Admin Dashboard' : 'VMS Dashboard'}</span>
-          </NavLink>
-
-          {/* Admin User Management */}
-          {isAdmin && (
-            <NavLink
-              to="/admin/users"
-              onClick={() => onClose()}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                  isActive
-                    ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-semibold shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-                }`
-              }
-            >
-              <Users className="w-4 h-4 shrink-0 text-purple-600 dark:text-purple-400" />
-              <span>User Management</span>
-            </NavLink>
-          )}
-
-          <NavLink
-            to="/upload"
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <UploadCloud className="w-4 h-4 shrink-0" />
-            <span>Upload Voter Document</span>
-          </NavLink>
-
-          <NavLink
-            to="/documents"
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <Files className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
-            <span>All Documents</span>
-          </NavLink>
-
-          <NavLink
-            to="/extracted-data"
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <TableProperties className="w-4 h-4 shrink-0" />
-            <span>Voter Records</span>
-          </NavLink>
-
-          <NavLink
-            to="/voter-entries"
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <CreditCard className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-            <span>Voter Details & Entries</span>
-          </NavLink>
-
-          <NavLink
-            to="/payments"
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <Receipt className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
-            <span>Payments Dashboard</span>
-          </NavLink>
-
-          {/* Wallet Management (Admin: Master Wallets + Voter Disbursal, User: My Wallet) */}
-          {isAdmin ? (
+          {/* ========================================================= */}
+          {/* 1. SUPER ADMIN SIDEBAR */}
+          {/* ========================================================= */}
+          {isSuperAdmin && (
             <>
-              <NavLink
-                to="/admin/wallets"
-                onClick={() => onClose()}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                    isActive
-                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-semibold shadow-xs'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-                  }`
-                }
-              >
-                <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                <span>Admin Wallet Hub</span>
+              <NavLink to="/admin/dashboard" onClick={onClose} className={navLinkClass}>
+                <LayoutDashboard className="w-4 h-4 shrink-0 text-brand-600 dark:text-brand-400" />
+                <span>Dashboard</span>
               </NavLink>
 
-              <NavLink
-                to="/my-wallet"
-                onClick={() => onClose()}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                    isActive
-                      ? 'bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 font-semibold shadow-xs'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-                  }`
-                }
-              >
-                <DollarSign className="w-4 h-4 shrink-0 text-teal-600 dark:text-teal-400" />
-                <span>Spend on Voter</span>
+              <NavLink to="/upload" onClick={onClose} className={navLinkClass}>
+                <UploadCloud className="w-4 h-4 shrink-0 text-indigo-600 dark:text-indigo-400" />
+                <span>Upload Voter Documents</span>
+              </NavLink>
+
+              <NavLink to="/documents" onClick={onClose} className={navLinkClass}>
+                <Files className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
+                <span>All Documents</span>
+              </NavLink>
+
+              <NavLink to="/extracted-data" onClick={onClose} className={navLinkClass}>
+                <TableProperties className="w-4 h-4 shrink-0 text-teal-600 dark:text-teal-400" />
+                <span>Voter Records</span>
+              </NavLink>
+
+              <NavLink to="/voter-entries" onClick={onClose} className={navLinkClass}>
+                <CreditCard className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Voter Entry Management</span>
+              </NavLink>
+
+              <NavLink to="/payments" onClick={onClose} className={navLinkClass}>
+                <Receipt className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span>Payments Dashboard</span>
+              </NavLink>
+
+              <NavLink to="/admin/users" onClick={onClose} className={navLinkClass}>
+                <Users className="w-4 h-4 shrink-0 text-purple-600 dark:text-purple-400" />
+                <span>User Management</span>
+              </NavLink>
+
+              <NavLink to="/admin/users?tab=roles" onClick={onClose} className={navLinkClass}>
+                <Shield className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                <span>Roles & Permissions</span>
+              </NavLink>
+
+              <NavLink to="/constituency-management" onClick={onClose} className={navLinkClass}>
+                <Building2 className="w-4 h-4 shrink-0 text-cyan-600 dark:text-cyan-400" />
+                <span>Constituency Management</span>
+              </NavLink>
+
+              <NavLink to="/ward-management" onClick={onClose} className={navLinkClass}>
+                <Layers className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" />
+                <span>Ward Management</span>
+              </NavLink>
+
+              <NavLink to="/user-assignments" onClick={onClose} className={navLinkClass}>
+                <UserCheck className="w-4 h-4 shrink-0 text-violet-600 dark:text-violet-400" />
+                <span>User Assignments</span>
+              </NavLink>
+
+              <NavLink to="/admin/wallets" onClick={onClose} className={navLinkClass}>
+                <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Wallet Management</span>
+              </NavLink>
+
+              <NavLink to="/reports" onClick={onClose} className={navLinkClass}>
+                <FileSpreadsheet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Reports & Export</span>
+              </NavLink>
+
+              <NavLink to="/settings" onClick={onClose} className={navLinkClass}>
+                <Settings className="w-4 h-4 shrink-0 text-slate-500 dark:text-slate-400" />
+                <span>Settings</span>
               </NavLink>
             </>
-          ) : (
-            <NavLink
-              to="/my-wallet"
-              onClick={() => onClose()}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                  isActive
-                    ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-semibold shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-                }`
-              }
-            >
-              <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-              <span>My Wallet & Spend on Voter</span>
-            </NavLink>
           )}
 
-          <NavLink
-            to="/settings"
-            onClick={() => onClose()}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-all ${
-                isActive
-                  ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
-              }`
-            }
-          >
-            <Settings className="w-4 h-4 shrink-0" />
-            <span>Settings</span>
-          </NavLink>
+          {/* ========================================================= */}
+          {/* 2. ADMIN SIDEBAR */}
+          {/* ========================================================= */}
+          {isAdmin && !isSuperAdmin && (
+            <>
+              <NavLink to="/admin/dashboard" onClick={onClose} className={navLinkClass}>
+                <LayoutDashboard className="w-4 h-4 shrink-0 text-brand-600 dark:text-brand-400" />
+                <span>Dashboard</span>
+              </NavLink>
+
+              <NavLink to="/upload" onClick={onClose} className={navLinkClass}>
+                <UploadCloud className="w-4 h-4 shrink-0 text-indigo-600 dark:text-indigo-400" />
+                <span>Upload Voter Documents</span>
+              </NavLink>
+
+              <NavLink to="/documents" onClick={onClose} className={navLinkClass}>
+                <Files className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
+                <span>All Documents</span>
+              </NavLink>
+
+              <NavLink to="/extracted-data" onClick={onClose} className={navLinkClass}>
+                <TableProperties className="w-4 h-4 shrink-0 text-teal-600 dark:text-teal-400" />
+                <span>Voter Records</span>
+              </NavLink>
+
+              <NavLink to="/voter-entries" onClick={onClose} className={navLinkClass}>
+                <CreditCard className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Voter Entry Management</span>
+              </NavLink>
+
+              <NavLink to="/payments" onClick={onClose} className={navLinkClass}>
+                <Receipt className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span>Payments Dashboard</span>
+              </NavLink>
+
+              <NavLink to="/admin/users" onClick={onClose} className={navLinkClass}>
+                <Users className="w-4 h-4 shrink-0 text-purple-600 dark:text-purple-400" />
+                <span>User Management</span>
+              </NavLink>
+
+              <NavLink to="/user-assignments" onClick={onClose} className={navLinkClass}>
+                <UserCheck className="w-4 h-4 shrink-0 text-violet-600 dark:text-violet-400" />
+                <span>User Assignments</span>
+              </NavLink>
+
+              <NavLink to="/admin/wallets" onClick={onClose} className={navLinkClass}>
+                <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Wallet Management</span>
+              </NavLink>
+
+              <NavLink to="/reports" onClick={onClose} className={navLinkClass}>
+                <FileSpreadsheet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Reports & Export</span>
+              </NavLink>
+            </>
+          )}
+
+          {/* ========================================================= */}
+          {/* 3. STANDARD USER SIDEBAR */}
+          {/* ========================================================= */}
+          {isUser && (
+            <>
+              <NavLink to="/user/dashboard" onClick={onClose} className={navLinkClass}>
+                <LayoutDashboard className="w-4 h-4 shrink-0 text-brand-600 dark:text-brand-400" />
+                <span>Dashboard</span>
+              </NavLink>
+
+              <NavLink to="/extracted-data" onClick={onClose} className={navLinkClass}>
+                <TableProperties className="w-4 h-4 shrink-0 text-teal-600 dark:text-teal-400" />
+                <span>Assigned Voters</span>
+              </NavLink>
+
+              <NavLink to="/extracted-data?focus=search" onClick={onClose} className={navLinkClass}>
+                <Search className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
+                <span>Voter Search</span>
+              </NavLink>
+
+              <NavLink to="/extracted-data?view=details" onClick={onClose} className={navLinkClass}>
+                <FileText className="w-4 h-4 shrink-0 text-indigo-600 dark:text-indigo-400" />
+                <span>Voter Details</span>
+              </NavLink>
+
+              <NavLink to="/voter-entries" onClick={onClose} className={navLinkClass}>
+                <CreditCard className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Voter Amount Assignment</span>
+              </NavLink>
+
+              <NavLink to="/my-wallet" onClick={onClose} className={navLinkClass}>
+                <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>My Wallet</span>
+              </NavLink>
+
+              <NavLink to="/my-wallet?tab=transactions" onClick={onClose} className={navLinkClass}>
+                <Receipt className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span>My Transactions</span>
+              </NavLink>
+
+              <NavLink to="/profile" onClick={onClose} className={navLinkClass}>
+                <User className="w-4 h-4 shrink-0 text-purple-600 dark:text-purple-400" />
+                <span>My Profile</span>
+              </NavLink>
+            </>
+          )}
         </nav>
 
         {/* Bottom User Profile Section */}
@@ -296,9 +332,11 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
                   <div className="flex items-center gap-1 text-[10px] text-slate-400">
                     <span
                       className={`px-1 rounded text-[9px] font-bold uppercase ${
-                        user.role === 'admin'
-                          ? 'bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300'
-                          : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300'
+                        isSuperAdmin
+                          ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
+                          : isAdmin
+                          ? 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300'
+                          : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
                       }`}
                     >
                       {user.role}

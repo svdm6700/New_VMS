@@ -28,6 +28,7 @@ import {
 import { VoterRecord, DocumentItem } from '../../types/document';
 import { documentService } from '../../services/documentService';
 import { EditVoterRecordModal } from './EditVoterRecordModal';
+import { PdfPreviewModal } from './PdfPreviewModal';
 
 interface VoterRecordsTableProps {
   initialDocumentId?: string;
@@ -73,6 +74,16 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
   // Copy Feedback State
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
+
+  // Voter Selection State (Multi-Select for PDF Generation)
+  const [selectedVoterIds, setSelectedVoterIds] = useState<number[]>([]);
+
+  // PDF Preview Modal State
+  const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const [pdfTitle, setPdfTitle] = useState('A4 Voter List PDF Preview');
+  const [pdfFilename, setPdfFilename] = useState('voter_list.pdf');
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   const fetchRecords = useCallback(async () => {
     setLoading(true);
@@ -139,8 +150,92 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
       await documentService.deleteVoterRecord(id);
       setRecords((prev) => prev.filter((r) => r.id !== id));
       setTotalRecords((prev) => Math.max(0, prev - 1));
+      setSelectedVoterIds((prev) => prev.filter((item) => item !== id));
     } catch (err: any) {
       alert(err.message || 'Failed to delete record.');
+    }
+  };
+
+  // Selection handlers
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      const pageIds = records.map((r) => r.id);
+      setSelectedVoterIds((prev) => Array.from(new Set([...prev, ...pageIds])));
+    } else {
+      const pageIdSet = new Set(records.map((r) => r.id));
+      setSelectedVoterIds((prev) => prev.filter((id) => !pageIdSet.has(id)));
+    }
+  };
+
+  const handleToggleVoter = (id: number) => {
+    setSelectedVoterIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const isAllPageSelected = records.length > 0 && records.every((r) => selectedVoterIds.includes(r.id));
+  const isSomePageSelected = records.some((r) => selectedVoterIds.includes(r.id)) && !isAllPageSelected;
+
+  // PDF Generation Handlers (A4, 27 Voters per Page, 3x9 Grid)
+  const handlePrintIndividualVoterPdf = async (voter: VoterRecord) => {
+    const key = voter.unique_key || voter.voter_id || String(voter.id);
+    setPdfTitle(`ఓటరు రికార్డు PDF - ${voter.voter_name} (${key})`);
+    setPdfFilename(`voter_${key}.pdf`);
+    setPdfLoading(true);
+    setIsPdfModalOpen(true);
+    try {
+      const blob = await documentService.getIndividualVoterPdf(voter.id);
+      setPdfBlob(blob);
+    } catch (err: any) {
+      alert(`Failed to generate individual voter PDF: ${err.message || err}`);
+      setIsPdfModalOpen(false);
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
+  const handleGenerateSelectedPdf = async () => {
+    if (selectedVoterIds.length === 0) {
+      alert('దయచేసి PDF తయారీ కోసం కనీసం ఒక ఓటరును ఎంచుకోండి (Please select at least one voter).');
+      return;
+    }
+    setPdfTitle(`ఎంపిక చేసిన ఓటర్ల A4 జాబితా PDF (${selectedVoterIds.length} ఓటర్లు)`);
+    setPdfFilename(`voters_selected_${selectedVoterIds.length}.pdf`);
+    setPdfLoading(true);
+    setIsPdfModalOpen(true);
+    try {
+      const blob = await documentService.getSelectedVotersPdf(selectedVoterIds);
+      setPdfBlob(blob);
+    } catch (err: any) {
+      alert(`Failed to generate selected voters PDF: ${err.message || err}`);
+      setIsPdfModalOpen(false);
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
+  const handleGenerateCompletePdf = async () => {
+    setPdfTitle(`సంపూర్ణ ఓటర్ల జాబితా A4 PDF (${totalRecords.toLocaleString()} ఓటర్లు)`);
+    const docPrefix = selectedDocId ? `doc_${selectedDocId.slice(0, 8)}` : 'all_voters';
+    setPdfFilename(`voter_list_${docPrefix}.pdf`);
+    setPdfLoading(true);
+    setIsPdfModalOpen(true);
+    try {
+      const blob = await documentService.getCompleteVoterListPdf({
+        district: districtFilter !== 'all' ? districtFilter : undefined,
+        constituency: constituencyFilter !== 'all' ? constituencyFilter : undefined,
+        area: areaFilter !== 'all' ? areaFilter : undefined,
+        ward_number: wardFilter !== 'all' ? wardFilter : undefined,
+        document_id: selectedDocId || undefined,
+        query: searchQuery.trim() || undefined,
+        gender: genderFilter !== 'all' ? genderFilter : undefined,
+      });
+      setPdfBlob(blob);
+    } catch (err: any) {
+      alert(`Failed to generate complete voter list PDF: ${err.message || err}`);
+      setIsPdfModalOpen(false);
+    } finally {
+      setPdfLoading(false);
     }
   };
 
@@ -257,6 +352,25 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
 
           <div className="flex flex-wrap items-center gap-2">
             <button
+              onClick={handleGenerateSelectedPdf}
+              disabled={selectedVoterIds.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white rounded-xl text-xs font-bold transition-all shadow-xs shadow-indigo-500/20"
+              title="Generate print-ready A4 PDF (27 voters per page) for selected voters"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Generate Selected PDF {selectedVoterIds.length > 0 ? `(${selectedVoterIds.length})` : ''}</span>
+            </button>
+
+            <button
+              onClick={handleGenerateCompletePdf}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-black dark:bg-slate-800 dark:hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs"
+              title="Generate complete A4 PDF for all filtered voter records (27 voters per page)"
+            >
+              <Printer className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Complete Voter List PDF</span>
+            </button>
+
+            <button
               onClick={copyAllVisible}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold transition-colors"
               title="Copy current table rows to clipboard"
@@ -290,6 +404,32 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Selected Voters Action Banner */}
+        {selectedVoterIds.length > 0 && (
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 rounded-2xl text-xs">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 animate-pulse" />
+              <span className="font-bold text-indigo-950 dark:text-indigo-200">
+                {selectedVoterIds.length} voter{selectedVoterIds.length === 1 ? '' : 's'} selected for PDF generation
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleGenerateSelectedPdf}
+                className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors"
+              >
+                Generate Selected PDF ({selectedVoterIds.length})
+              </button>
+              <button
+                onClick={() => setSelectedVoterIds([])}
+                className="px-2.5 py-1 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 text-xs font-medium"
+              >
+                Clear Selection
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Location Banner (Showing selected or active document location details) */}
         {activeDocument && (activeDocument.district || activeDocument.area) && (
@@ -494,9 +634,27 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
 
         {/* Scrollable Container with sticky header */}
         <div className="overflow-x-auto max-h-[600px] divide-y divide-slate-100 dark:divide-slate-800">
-          <table className="w-full text-left border-collapse min-w-[1100px]">
+          <table className="w-full text-left border-collapse min-w-[1200px]">
             <thead className="bg-slate-50 dark:bg-slate-800/80 sticky top-0 z-10 shadow-xs backdrop-blur-xs">
               <tr className="border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider">
+                <th className="px-3 py-3 w-10 text-center">
+                  <input
+                    type="checkbox"
+                    checked={isAllPageSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = isSomePageSelected;
+                    }}
+                    onChange={(e) => handleSelectAll(e.target.checked)}
+                    className="w-4 h-4 rounded text-brand-600 focus:ring-brand-500 cursor-pointer"
+                    title={isAllPageSelected ? 'Deselect all on page' : 'Select all on page'}
+                  />
+                </th>
+                <th
+                  onClick={() => handleSort('unique_key')}
+                  className="px-3 py-3 cursor-pointer hover:bg-slate-100/60 dark:hover:bg-slate-700/50 w-28 whitespace-nowrap"
+                >
+                  యూనిక్ కీ {renderSortIcon('unique_key')}
+                </th>
                 <th
                   onClick={() => handleSort('serial_no')}
                   className="px-3 py-3 cursor-pointer hover:bg-slate-100/60 dark:hover:bg-slate-700/50 w-24 whitespace-nowrap"
@@ -552,21 +710,21 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
                 >
                   పుట {renderSortIcon('source_page')}
                 </th>
-                <th className="px-3 py-3 text-center w-20">చర్యలు</th>
+                <th className="px-3 py-3 text-center w-28">చర్యలు</th>
               </tr>
             </thead>
 
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-xs text-slate-800 dark:text-slate-200">
               {loading && records.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="py-12 text-center text-slate-400">
+                  <td colSpan={13} className="py-12 text-center text-slate-400">
                     <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-brand-600" />
                     Loading voter records from database...
                   </td>
                 </tr>
               ) : records.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="py-12 text-center text-slate-400">
+                  <td colSpan={13} className="py-12 text-center text-slate-400">
                     <p className="font-semibold text-slate-700 dark:text-slate-300">No voter records found.</p>
                     <p className="text-xs mt-1">Upload a Telugu PDF to extract and store records automatically.</p>
                   </td>
@@ -575,8 +733,34 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
                 records.map((r) => (
                   <tr
                     key={r.id}
-                    className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors group"
+                    className={`hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors group ${
+                      selectedVoterIds.includes(r.id) ? 'bg-indigo-50/40 dark:bg-indigo-950/20' : ''
+                    }`}
                   >
+                    <td className="px-3 py-2.5 text-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedVoterIds.includes(r.id)}
+                        onChange={() => handleToggleVoter(r.id)}
+                        className="w-4 h-4 rounded text-brand-600 focus:ring-brand-500 cursor-pointer"
+                        title={`Select ${r.voter_name}`}
+                      />
+                    </td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">
+                      <span
+                        className="inline-flex items-center px-2 py-0.5 rounded-md font-mono font-bold text-xs bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 tracking-wider shadow-2xs cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900 transition-colors"
+                        title="Permanent 5-character Unique Key. Click to copy."
+                        onClick={() => {
+                          if (r.unique_key) {
+                            navigator.clipboard.writeText(r.unique_key);
+                            setCopiedId(r.id);
+                            setTimeout(() => setCopiedId(null), 2000);
+                          }
+                        }}
+                      >
+                        {r.unique_key || '—'}
+                      </span>
+                    </td>
                     <td className="px-3 py-2.5 font-bold text-slate-900 dark:text-slate-100 font-mono">
                       {r.serial_no}
                     </td>
@@ -619,6 +803,13 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
                     </td>
                     <td className="px-3 py-2.5 text-center">
                       <div className="flex items-center justify-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => handlePrintIndividualVoterPdf(r)}
+                          className="p-1 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-md"
+                          title="Generate & Print A4 Voter PDF"
+                        >
+                          <FileText className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                        </button>
                         <button
                           onClick={() => copyRow(r)}
                           className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-md"
@@ -745,6 +936,19 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
         onSaved={(updated) => {
           setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
         }}
+      />
+
+      {/* A4 Voter List PDF Preview Modal */}
+      <PdfPreviewModal
+        isOpen={isPdfModalOpen}
+        onClose={() => {
+          setIsPdfModalOpen(false);
+          setPdfBlob(null);
+        }}
+        pdfBlob={pdfBlob}
+        title={pdfTitle}
+        filename={pdfFilename}
+        loading={pdfLoading}
       />
     </div>
   );

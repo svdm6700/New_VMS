@@ -21,9 +21,13 @@ import { PaymentsDashboard } from './pages/PaymentsDashboard';
 import { WalletManagement } from './pages/WalletManagement';
 import { MyWalletPage } from './pages/MyWalletPage';
 import { Settings } from './pages/Settings';
+import { ConstituencyManagement } from './pages/ConstituencyManagement';
+import { WardManagement } from './pages/WardManagement';
+import { UserAssignmentsPage } from './pages/UserAssignmentsPage';
+import { ReportsExportPage } from './pages/ReportsExportPage';
 
 const RootRedirect: React.FC = () => {
-  const { isAuthenticated, isAdmin, isLoading } = useAuth();
+  const { isAuthenticated, isUser, isLoading } = useAuth();
   if (isLoading) {
     return (
       <div className="min-h-[50vh] flex items-center justify-center text-xs text-slate-400">
@@ -34,7 +38,12 @@ const RootRedirect: React.FC = () => {
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
-  return <Navigate to={isAdmin ? '/admin/dashboard' : '/user/dashboard'} replace />;
+  return <Navigate to={isUser ? '/user/dashboard' : '/admin/dashboard'} replace />;
+};
+
+const WalletRedirect: React.FC = () => {
+  const { isUser } = useAuth();
+  return <Navigate to={isUser ? '/my-wallet' : '/admin/wallets'} replace />;
 };
 
 function AppLayout() {
@@ -52,7 +61,7 @@ function AppLayout() {
     );
   }
 
-  // Dedicated standalone layout for Login page or unauthenticated state (no sidebar, no navbar, full screen centered)
+  // Standalone layout for Login page or unauthenticated state
   if (isLoginPage || !isAuthenticated) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col justify-center items-center font-sans transition-colors duration-200">
@@ -86,7 +95,7 @@ function AppLayout() {
             <Route
               path="/admin/dashboard"
               element={
-                <ProtectedRoute requiredRole="admin">
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <AdminDashboard />
                 </ProtectedRoute>
               }
@@ -94,37 +103,56 @@ function AppLayout() {
             <Route
               path="/user/dashboard"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute allowedRoles={['user']}>
                   <UserDashboard />
                 </ProtectedRoute>
               }
             />
 
-            {/* Admin-only User Management */}
+            {/* Administrative User & Role Management */}
             <Route
               path="/admin/users"
               element={
-                <ProtectedRoute requiredRole="admin">
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <UserManagement />
                 </ProtectedRoute>
               }
             />
+            <Route path="/users" element={<Navigate to="/admin/users" replace />} />
 
-            {/* User Profile & Password Change */}
+            {/* Geographic Master Management (Super Admin Exclusive) */}
             <Route
-              path="/profile"
+              path="/constituency-management"
               element={
-                <ProtectedRoute>
-                  <ProfilePage />
+                <ProtectedRoute allowedRoles={['super_admin']}>
+                  <ConstituencyManagement />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/ward-management"
+              element={
+                <ProtectedRoute allowedRoles={['super_admin']}>
+                  <WardManagement />
                 </ProtectedRoute>
               }
             />
 
-            {/* Core Telugu PDF Processing & Extraction Features */}
+            {/* User Geographic Assignments (Super Admin & Admin) */}
+            <Route
+              path="/user-assignments"
+              element={
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
+                  <UserAssignmentsPage />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Document Management (Super Admin & Admin Only) */}
             <Route
               path="/upload"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <UploadPDF />
                 </ProtectedRoute>
               }
@@ -132,83 +160,104 @@ function AppLayout() {
             <Route
               path="/documents"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <DocumentsPage />
                 </ProtectedRoute>
               }
             />
+
+            {/* Voter Records & Entry Management (All Authenticated Roles) */}
             <Route
               path="/extracted-data"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin', 'user']}>
                   <ExtractedData />
                 </ProtectedRoute>
               }
             />
+            <Route path="/voters" element={<Navigate to="/extracted-data" replace />} />
+
             <Route
               path="/voter-entries"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin', 'user']}>
                   <VoterEntriesPage />
                 </ProtectedRoute>
               }
             />
+            <Route path="/voter-entry" element={<Navigate to="/voter-entries" replace />} />
+
+            {/* Payments Dashboard (Super Admin & Admin) */}
             <Route
               path="/payments"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <PaymentsDashboard />
                 </ProtectedRoute>
               }
             />
 
-            {/* Wallet Management & Voter Allocation */}
+            {/* Wallet Management */}
             <Route
               path="/admin/wallets"
               element={
-                <ProtectedRoute requiredRole="admin">
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <WalletManagement />
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/wallets"
-              element={
-                <ProtectedRoute requiredRole="admin">
-                  <WalletManagement />
-                </ProtectedRoute>
-              }
-            />
+            <Route path="/wallets" element={<Navigate to="/admin/wallets" replace />} />
+            <Route path="/wallet" element={<WalletRedirect />} />
+
             <Route
               path="/my-wallet"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute allowedRoles={['super_admin', 'admin', 'user']}>
                   <MyWalletPage />
                 </ProtectedRoute>
               }
             />
 
-            {/* Redirect legacy removed routes to Voter Records */}
-            <Route path="/reader" element={<Navigate to="/extracted-data" replace />} />
-            <Route path="/text" element={<Navigate to="/extracted-data" replace />} />
-            <Route path="/tables" element={<Navigate to="/extracted-data" replace />} />
-            <Route path="/ocr" element={<Navigate to="/extracted-data" replace />} />
+            {/* Reports & Export */}
+            <Route
+              path="/reports"
+              element={
+                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
+                  <ReportsExportPage />
+                </ProtectedRoute>
+              }
+            />
 
+            {/* User Profile */}
+            <Route
+              path="/profile"
+              element={
+                <ProtectedRoute allowedRoles={['super_admin', 'admin', 'user']}>
+                  <ProfilePage />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Settings (Super Admin Only) */}
             <Route
               path="/settings"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute allowedRoles={['super_admin']}>
                   <Settings />
                 </ProtectedRoute>
               }
             />
 
+            {/* Legacy aliases */}
+            <Route path="/reader" element={<Navigate to="/extracted-data" replace />} />
+            <Route path="/text" element={<Navigate to="/extracted-data" replace />} />
+            <Route path="/tables" element={<Navigate to="/extracted-data" replace />} />
+            <Route path="/ocr" element={<Navigate to="/extracted-data" replace />} />
+
             {/* Fallback */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
-
-
       </div>
     </div>
   );

@@ -239,6 +239,7 @@ class VoterRecordModel(Base):
     gender = Column(String(64), default="Not Available")
     house_no = Column(String(128), default="Not Available")
     voter_id = Column(String(128), default="Not Available", index=True)
+    unique_key = Column(String(5), unique=True, index=True, nullable=True)
     source_page = Column(Integer, default=1)
     ocr_confidence = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -267,6 +268,8 @@ class VoterRecordModel(Base):
             "gender": self.gender,
             "house_no": self.house_no,
             "voter_id": self.voter_id,
+            "unique_key": self.unique_key,
+            "unique_id": self.unique_key,
             "source_page": self.source_page,
             "ocr_confidence": self.ocr_confidence,
             "district": getattr(self.document, "district", None) if self.document and self.document.district else "Not Available",
@@ -605,6 +608,81 @@ class VoterAmountAllocationModel(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
+class DistrictModel(Base):
+    __tablename__ = "districts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(150), unique=True, nullable=False, index=True)
+    code = Column(String(50), nullable=True)
+    state = Column(String(100), default="Andhra Pradesh", nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    constituencies = relationship("ConstituencyModel", back_populates="district", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "code": self.code,
+            "state": self.state,
+            "constituencies_count": len(self.constituencies) if self.constituencies else 0,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+class ConstituencyModel(Base):
+    __tablename__ = "constituencies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(150), nullable=False, index=True)
+    code = Column(String(50), nullable=True)
+    district_id = Column(Integer, ForeignKey("districts.id", ondelete="CASCADE"), nullable=True)
+    district_name = Column(String(150), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    district = relationship("DistrictModel", back_populates="constituencies")
+    wards = relationship("WardModel", back_populates="constituency", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "code": self.code,
+            "district_id": self.district_id,
+            "district_name": self.district_name,
+            "wards_count": len(self.wards) if self.wards else 0,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+class WardModel(Base):
+    __tablename__ = "wards"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ward_number = Column(String(50), nullable=False, index=True)
+    constituency_id = Column(Integer, ForeignKey("constituencies.id", ondelete="CASCADE"), nullable=True)
+    constituency_name = Column(String(150), nullable=False, index=True)
+    area_name = Column(String(200), nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    constituency = relationship("ConstituencyModel", back_populates="wards")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "ward_number": self.ward_number,
+            "constituency_id": self.constituency_id,
+            "constituency_name": self.constituency_name,
+            "area_name": self.area_name,
+            "description": self.description,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
 def ensure_database_exists():
     """
     Connects to the default PostgreSQL maintenance database ('postgres')
@@ -708,6 +786,8 @@ def ensure_default_seed():
             ("wallet.reverse", "wallets", "delete", "Reverse voter amount allocations and refund wallet"),
             ("geo.view", "geo_assignments", "view", "View geographic constituency and ward assignments"),
             ("geo.manage", "geo_assignments", "edit", "Manage user constituency and ward assignments"),
+            ("geo.master", "geo_assignments", "manage", "Create, edit, and delete master Districts, Constituencies, and Wards (Super Admin only)"),
+            ("geo.assign_admin", "geo_assignments", "assign", "Assign Constituencies and Wards to Admins (Super Admin only)"),
         ]
 
         code_to_perm_id = {}
@@ -722,10 +802,23 @@ def ensure_default_seed():
 
         # 2. Seed System Roles
         system_roles_defs = {
-            "admin": {
-                "desc": "System Administrator with full unrestricted access to all modules and system controls",
+            "super_admin": {
+                "desc": "Super Administrator with full master control across all modules, locations, settings and roles",
                 "is_system": True,
                 "perms": list(code_to_perm_id.keys()) # All permissions
+            },
+            "admin": {
+                "desc": "Administrator with restricted administrative scope, user management, and assigned geographic access",
+                "is_system": True,
+                "perms": [
+                    "voters.view", "voters.create", "voters.edit",
+                    "voter_entries.view", "voter_entries.create", "voter_entries.edit",
+                    "documents.view", "documents.create", "documents.download", "documents.reprocess",
+                    "users.view", "users.create", "users.edit", "users.delete",
+                    "payments.view", "payments.create", "payments.edit", "payments.verify", "payments.export", "payments.print_receipt",
+                    "wallet.view", "wallet.fund", "wallet.allocate", "wallet.assign_voter", "wallet.reverse",
+                    "geo.view", "geo.manage"
+                ]
             },
             "operator": {
                 "desc": "Data Operator authorized to search voters, record entries, upload documents, and edit records",
@@ -752,15 +845,12 @@ def ensure_default_seed():
                 ]
             },
             "user": {
-                "desc": "Standard User with standard search, entry, payment and upload capabilities",
+                "desc": "Standard User with access restricted strictly to assigned voters and area",
                 "is_system": True,
                 "perms": [
                     "voters.view",
                     "voter_entries.view", "voter_entries.create",
-                    "payments.view", "payments.create", "payments.print_receipt",
-                    "wallet.view", "wallet.assign_voter", "geo.view",
-                    "documents.view", "documents.create",
-                    "settings.view"
+                    "wallet.view", "wallet.assign_voter", "geo.view"
                 ]
             }
         }
@@ -796,7 +886,7 @@ def ensure_default_seed():
                     db.add(RolePermissionModel(role_id=role_obj.id, permission_id=p_id, created_at=utcnow()))
         db.commit()
 
-        # 3. Check / create initial admin account
+        # 3. Check / create initial admin (Super Admin) account
         admin_user = db.query(UserModel).filter(
             (UserModel.username == settings.INITIAL_ADMIN_USERNAME) | 
             (UserModel.email == settings.INITIAL_ADMIN_EMAIL)
@@ -808,7 +898,7 @@ def ensure_default_seed():
                 email=settings.INITIAL_ADMIN_EMAIL,
                 username=settings.INITIAL_ADMIN_USERNAME,
                 password_hash=hash_password(settings.INITIAL_ADMIN_PASSWORD),
-                role="admin",
+                role="super_admin",
                 is_active=True,
                 created_at=utcnow(),
                 updated_at=utcnow()
@@ -816,21 +906,143 @@ def ensure_default_seed():
             db.add(admin_user)
             db.commit()
             db.refresh(admin_user)
-            print(f"[VMS Database] Created initial admin user: username='{settings.INITIAL_ADMIN_USERNAME}'")
+            print(f"[VMS Database] Created initial Super Admin user: username='{settings.INITIAL_ADMIN_USERNAME}'")
+        else:
+            if admin_user.role != "super_admin":
+                admin_user.role = "super_admin"
+                db.commit()
+                print(f"[VMS Database] Upgraded user '{admin_user.username}' to 'super_admin' role.")
+
+        # Also ensure a default scoped 'admin' user exists for administrative scope testing
+        scoped_admin = db.query(UserModel).filter(UserModel.username == "admin_scoped").first()
+        if not scoped_admin:
+            scoped_admin = UserModel(
+                full_name="Regional Admin (West Godavari)",
+                email="admin_scoped@vms.com",
+                username="admin_scoped",
+                password_hash=hash_password("Admin@12345"),
+                role="admin",
+                is_active=True,
+                created_at=utcnow(),
+                updated_at=utcnow()
+            )
+            db.add(scoped_admin)
+            db.commit()
+            db.refresh(scoped_admin)
+            print("[VMS Database] Created default scoped admin user: username='admin_scoped'")
 
         # 4. Map all existing users to user_roles table
+        super_admin_role = role_name_to_role.get("super_admin")
         admin_role = role_name_to_role.get("admin")
         user_role = role_name_to_role.get("user")
         all_users = db.query(UserModel).all()
         for u in all_users:
             assigned = db.query(UserRoleModel).filter(UserRoleModel.user_id == u.id).first()
             if not assigned:
-                target_role = admin_role if u.role.lower() == "admin" else user_role
+                if u.role.lower() in ("super_admin", "superadmin"):
+                    target_role = super_admin_role
+                elif u.role.lower() == "admin":
+                    target_role = admin_role
+                else:
+                    target_role = user_role
                 if target_role:
                     db.add(UserRoleModel(user_id=u.id, role_id=target_role.id, created_at=utcnow()))
         db.commit()
 
-        # 5. Initial Audit Log
+        # 5. Seed Master Geographic Data (Districts, Constituencies, Wards)
+        if db.query(DistrictModel).count() == 0:
+            d1 = DistrictModel(
+                name="పశ్చిమ గోదావరి (West Godavari)",
+                code="WG",
+                state="Andhra Pradesh",
+                created_at=utcnow(),
+                updated_at=utcnow()
+            )
+            db.add(d1)
+            db.flush()
+
+            c1 = ConstituencyModel(
+                name="తాడేపల్లిగూడెం (Tadepalligudem)",
+                code="62",
+                district_id=d1.id,
+                district_name=d1.name,
+                created_at=utcnow(),
+                updated_at=utcnow()
+            )
+            c2 = ConstituencyModel(
+                name="భీమవరం (Bhimavaram)",
+                code="61",
+                district_id=d1.id,
+                district_name=d1.name,
+                created_at=utcnow(),
+                updated_at=utcnow()
+            )
+            db.add_all([c1, c2])
+            db.flush()
+
+            w1 = WardModel(
+                ward_number="2",
+                constituency_id=c1.id,
+                constituency_name=c1.name,
+                area_name="రామచంద్రపురం (Ramachandrapuram)",
+                description="Ward 2 Ramachandrapuram village",
+                created_at=utcnow(),
+                updated_at=utcnow()
+            )
+            w2 = WardModel(
+                ward_number="1",
+                constituency_id=c1.id,
+                constituency_name=c1.name,
+                area_name="గాంధీ నగర్ (Gandhi Nagar)",
+                description="Ward 1 Gandhi Nagar",
+                created_at=utcnow(),
+                updated_at=utcnow()
+            )
+            w3 = WardModel(
+                ward_number="7",
+                constituency_id=c1.id,
+                constituency_name=c1.name,
+                area_name="కంచుమిల్లిపాడు (Kanchumillipadu)",
+                description="Ward 7 Kanchumillipadu",
+                created_at=utcnow(),
+                updated_at=utcnow()
+            )
+            w4 = WardModel(
+                ward_number="1",
+                constituency_id=c2.id,
+                constituency_name=c2.name,
+                area_name="బాలాజీ నగర్ (Balaji Nagar)",
+                description="Ward 1 Balaji Nagar",
+                created_at=utcnow(),
+                updated_at=utcnow()
+            )
+            db.add_all([w1, w2, w3, w4])
+            db.commit()
+            print("[VMS Database] Seeded master Districts, Constituencies, and Wards.")
+
+        # 6. Ensure default geographic assignment for scoped_admin
+        if scoped_admin:
+            admin_geo = db.query(UserGeographicAssignmentModel).filter(
+                UserGeographicAssignmentModel.user_id == scoped_admin.id,
+                UserGeographicAssignmentModel.status == "ACTIVE"
+            ).first()
+            if not admin_geo:
+                import json
+                db.add(UserGeographicAssignmentModel(
+                    user_id=scoped_admin.id,
+                    district="పశ్చిమ గోదావరి (West Godavari)",
+                    constituency="తాడేపల్లిగూడెం (Tadepalligudem)",
+                    wards=json.dumps(["2"]),
+                    area="రామచంద్రపురం (Ramachandrapuram)",
+                    status="ACTIVE",
+                    assigned_by=admin_user.id if admin_user else None,
+                    created_at=utcnow(),
+                    updated_at=utcnow()
+                ))
+                db.commit()
+                print("[VMS Database] Seeded geographic assignment for 'admin_scoped' in Tadepalligudem Ward 2.")
+
+        # 7. Initial Audit Log
         if db.query(AuditLogModel).count() == 0:
             db.add(AuditLogModel(
                 user_id=admin_user.id if admin_user else None,
@@ -918,6 +1130,12 @@ def init_db():
     ensure_database_exists()
     ensure_tables_exist()
     ensure_default_seed()
+    try:
+        from backend.unique_key import backfill_missing_unique_keys
+        with SessionLocal() as db_session:
+            backfill_missing_unique_keys(db_session)
+    except Exception as _bk_err:
+        pass
     print("[VMS Database] Database and tables are ready.")
 
 def get_db():

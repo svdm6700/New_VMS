@@ -79,6 +79,8 @@ export interface VoterRecord {
   gender: string;
   house_no: string;
   voter_id: string;
+  unique_key?: string;
+  unique_id?: string;
   source_page: number;
   ocr_confidence?: number | null;
   created_at: string;

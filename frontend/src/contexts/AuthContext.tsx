@@ -7,7 +7,10 @@ interface AuthContextType {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
+  isSuperAdmin: boolean;
   isAdmin: boolean;
+  isUser: boolean;
+  isAdministrative: boolean;
   isLoading: boolean;
   login: (credentials: LoginCredentials) => Promise<AuthResponse>;
   logout: () => Promise<void>;
@@ -98,7 +101,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const isAuthenticated = !!token && !!user;
-  const isAdmin = user?.role === 'admin';
+  const isSuperAdmin = Boolean(user && (user.role === 'super_admin' || (user.role as string) === 'superadmin'));
+  const isAdmin = Boolean(user && user.role === 'admin');
+  const isUser = Boolean(user && user.role === 'user');
+  const isAdministrative = isSuperAdmin || isAdmin;
 
   return (
     <AuthContext.Provider
@@ -106,7 +112,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         token,
         isAuthenticated,
+        isSuperAdmin,
         isAdmin,
+        isUser,
+        isAdministrative,
         isLoading,
         login,
         logout,

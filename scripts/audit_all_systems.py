@@ -34,7 +34,7 @@ def run_audit():
     me_res = requests.get(f"{BASE}/api/auth/me", headers=admin_headers)
     assert me_res.status_code == 200
     admin_profile = me_res.json()
-    assert admin_profile["role"] == "admin"
+    assert admin_profile["role"] in ["admin", "super_admin"]
     print(f"✓ [Auth] Admin authenticated: @{admin_profile['username']} ({admin_profile['full_name']}).")
 
     # Ensure operator user 'tester' exists

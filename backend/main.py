@@ -36,7 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, desc, asc, text, func, case
+from sqlalchemy import or_, desc, asc, text, func, case, and_
 
 try:
     from app.core.config import settings
@@ -50,13 +50,17 @@ try:
         RolePermissionModel, UserRoleModel, AuditLogModel,
         PaymentModel, PaymentAuditLogModel,
         WalletModel, WalletTransactionModel, UserGeographicAssignmentModel,
-        VoterAmountAllocationModel
+        VoterAmountAllocationModel, DistrictModel, ConstituencyModel, WardModel
     )
     from backend.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
-    from backend.auth_deps import get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission
+    from backend.auth_deps import (
+        get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission,
+        is_super_admin, is_admin, is_admin_or_super, require_super_admin, require_roles
+    )
     from backend.processor import process_pdf
     from backend.excel import create_excel
     from backend.seed import seed_database
+    from backend.pdf_generator import generate_voters_a4_pdf
 except ImportError:
     from database import (
         init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel,
@@ -64,13 +68,17 @@ except ImportError:
         RolePermissionModel, UserRoleModel, AuditLogModel,
         PaymentModel, PaymentAuditLogModel,
         WalletModel, WalletTransactionModel, UserGeographicAssignmentModel,
-        VoterAmountAllocationModel
+        VoterAmountAllocationModel, DistrictModel, ConstituencyModel, WardModel
     )
     from security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
-    from auth_deps import get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission
+    from auth_deps import (
+        get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission,
+        is_super_admin, is_admin, is_admin_or_super, require_super_admin, require_roles
+    )
     from processor import process_pdf
     from excel import create_excel
     from seed import seed_database
+    from pdf_generator import generate_voters_a4_pdf
 
 # Initialize database & seed initial admin (only if not already created)
 seed_database()
@@ -332,8 +340,33 @@ def run_background_extraction(
             # Delete previous records if reprocessed
             db.query(VoterRecordModel).filter(VoterRecordModel.document_id == doc_id).delete()
 
+            # Duplicate Voter Detection & Permanent 5-Character Unique Key Assignment
+            from backend.unique_key import generate_bulk_unique_keys
+            records_list = result.get("records", [])
+
+            # Check if any voter in this batch already exists in PostgreSQL
+            existing_epics = {}
+            for r in records_list:
+                f_dict = {f.get("field_name", "").strip(): str(f.get("value", "")).strip() for f in r.get("fields", [])}
+                vid = f_dict.get("ఓటరు ఐడి కార్డు నెం.") or f_dict.get("గుర్తింపు కార్డు నెం.")
+                if vid and vid != "Not Available":
+                    existing_epics[vid] = None
+
+            if existing_epics:
+                found_voters = db.query(VoterRecordModel.voter_id, VoterRecordModel.unique_key).filter(
+                    VoterRecordModel.voter_id.in_(list(existing_epics.keys())),
+                    VoterRecordModel.unique_key.isnot(None),
+                    VoterRecordModel.unique_key != ""
+                ).all()
+                for vid, ukey in found_voters:
+                    if vid and ukey:
+                        existing_epics[vid] = ukey
+
+            fresh_keys = generate_bulk_unique_keys(db, len(records_list))
+            fresh_key_idx = 0
+
             voter_objs = []
-            for r in result.get("records", []):
+            for r in records_list:
                 fields = {f.get("field_name", "").strip(): str(f.get("value", "")).strip() for f in r.get("fields", [])}
 
                 sno = fields.get("గ్రా.పం.ఓ.జా.వ.సం.") or fields.get("వరుస సంఖ్య") or str(r.get("record_id", ""))
@@ -358,6 +391,14 @@ def run_background_extraction(
                 voter_id = fields.get("ఓటరు ఐడి కార్డు నెం.") or fields.get("గుర్తింపు కార్డు నెం.") or "Not Available"
                 source_page = r.get("page", 1)
 
+                # Determine permanent unique key: reuse if confirmed duplicate, else use fresh key
+                assigned_key = None
+                if voter_id and voter_id != "Not Available" and existing_epics.get(voter_id):
+                    assigned_key = existing_epics[voter_id]
+                else:
+                    assigned_key = fresh_keys[fresh_key_idx]
+                    fresh_key_idx += 1
+
                 voter_objs.append(VoterRecordModel(
                     document_id=doc_id,
                     serial_no=sno or "Not Available",
@@ -369,6 +410,7 @@ def run_background_extraction(
                     gender=gender or "Not Available",
                     house_no=house or "Not Available",
                     voter_id=voter_id or "Not Available",
+                    unique_key=assigned_key,
                     source_page=source_page,
                     ocr_confidence=None,
                     created_at=datetime.now(timezone.utc),
@@ -591,7 +633,17 @@ def admin_create_user(
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
 
-    role = req.role.lower() if req.role in ["admin", "user"] else "user"
+    req_role = req.role.lower().strip() if req.role else "user"
+    if req_role in ("super_admin", "superadmin"):
+        if not is_super_admin(current_admin):
+            raise HTTPException(status_code=403, detail="Only Super Admin can create Super Admin accounts.")
+        role = "super_admin"
+    elif req_role == "admin":
+        if not is_super_admin(current_admin):
+            raise HTTPException(status_code=403, detail="Admins can only create standard User accounts. Super Admin role is required to create Admin accounts.")
+        role = "admin"
+    else:
+        role = "user"
 
     new_user = UserModel(
         full_name=req.full_name.strip(),
@@ -667,6 +719,12 @@ def admin_update_user(
     if not u:
         raise HTTPException(status_code=404, detail="User not found.")
 
+    # Privilege hierarchy enforcement
+    if is_super_admin(u) and not is_super_admin(current_admin):
+        raise HTTPException(status_code=403, detail="Admins cannot modify Super Admin accounts or privileges.")
+    if is_admin(u) and not is_super_admin(current_admin) and user_id != current_admin.id:
+        raise HTTPException(status_code=403, detail="Admins cannot modify other Administrator accounts.")
+
     if req.full_name is not None:
         u.full_name = req.full_name.strip()
     if req.email is not None:
@@ -681,14 +739,20 @@ def admin_update_user(
         if conflict:
             raise HTTPException(status_code=400, detail="Username is already in use by another account.")
         u.username = username
-    if req.role is not None and req.role in ["admin", "user"]:
-        # Prevent demoting self if sole admin
-        if user_id == current_admin.id and req.role != "admin":
-            admin_count = db.query(UserModel).filter(UserModel.role == "admin").count()
-            if admin_count <= 1:
-                raise HTTPException(status_code=400, detail="Cannot demote the sole administrator.")
-        u.role = req.role
+    if req.role is not None:
+        target_role = req.role.lower().strip()
+        if not is_super_admin(current_admin):
+            raise HTTPException(status_code=403, detail="Only Super Admin can change user roles.")
+        if is_super_admin(u) and target_role not in ("super_admin", "superadmin"):
+            super_count = db.query(UserModel).filter(UserModel.role.in_(["super_admin", "superadmin"]), UserModel.is_active == True).count()
+            if super_count <= 1:
+                raise HTTPException(status_code=400, detail="Cannot demote the last active Super Administrator.")
+        u.role = target_role
     if req.is_active is not None:
+        if is_super_admin(u) and not req.is_active:
+            super_count = db.query(UserModel).filter(UserModel.role.in_(["super_admin", "superadmin"]), UserModel.is_active == True).count()
+            if super_count <= 1:
+                raise HTTPException(status_code=400, detail="Cannot deactivate the last active Super Administrator.")
         if user_id == current_admin.id and not req.is_active:
             raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
         u.is_active = req.is_active
@@ -716,6 +780,16 @@ def admin_toggle_user_status(
     if not u:
         raise HTTPException(status_code=404, detail="User not found.")
 
+    if is_super_admin(u) and not is_super_admin(current_admin):
+        raise HTTPException(status_code=403, detail="Admins cannot modify Super Admin accounts.")
+    if is_admin(u) and not is_super_admin(current_admin) and user_id != current_admin.id:
+        raise HTTPException(status_code=403, detail="Admins cannot deactivate other Administrator accounts.")
+
+    if is_super_admin(u) and not req.is_active:
+        super_count = db.query(UserModel).filter(UserModel.role.in_(["super_admin", "superadmin"]), UserModel.is_active == True).count()
+        if super_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot deactivate the last active Super Administrator.")
+
     u.is_active = req.is_active
     u.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -728,18 +802,18 @@ def admin_change_user_role(
     current_admin: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
-    role = req.role.lower()
-    if role not in ["admin", "user"]:
-        raise HTTPException(status_code=400, detail="Role must be 'admin' or 'user'.")
+    if not is_super_admin(current_admin):
+        raise HTTPException(status_code=403, detail="Only Super Admin can change user roles.")
 
-    if user_id == current_admin.id and role != "admin":
-        admin_count = db.query(UserModel).filter(UserModel.role == "admin").count()
-        if admin_count <= 1:
-            raise HTTPException(status_code=400, detail="Cannot demote the sole administrator.")
-
+    role = req.role.lower().strip()
     u = db.query(UserModel).filter(UserModel.id == user_id).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found.")
+
+    if is_super_admin(u) and role not in ("super_admin", "superadmin"):
+        super_count = db.query(UserModel).filter(UserModel.role.in_(["super_admin", "superadmin"]), UserModel.is_active == True).count()
+        if super_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot demote the last active Super Administrator.")
 
     u.role = role
     u.updated_at = datetime.now(timezone.utc)
@@ -758,6 +832,16 @@ def admin_delete_user(
     u = db.query(UserModel).filter(UserModel.id == user_id).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found.")
+
+    if is_super_admin(u) and not is_super_admin(current_admin):
+        raise HTTPException(status_code=403, detail="Admins cannot delete Super Admin accounts.")
+    if is_admin(u) and not is_super_admin(current_admin):
+        raise HTTPException(status_code=403, detail="Admins cannot delete other Administrator accounts.")
+
+    if is_super_admin(u):
+        super_count = db.query(UserModel).filter(UserModel.role.in_(["super_admin", "superadmin"])).count()
+        if super_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete the last active Super Administrator.")
 
     # Reassign documents to current admin or null
     for d in u.documents:
@@ -785,6 +869,19 @@ async def upload_document(
     current_user: Optional[UserModel] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
+    # 0. Role & Geographic Scope Authentication Validation
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials are required to upload voter documents."
+        )
+
+    if not is_admin_or_super(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Document upload is restricted to Super Admin and Admin only. Standard users cannot upload voter documents."
+        )
+
     # 1. Validate all manual location fields
     clean_district = (district or "").strip()
     clean_constituency = (constituency or "").strip()
@@ -799,6 +896,39 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Area / Village (ప్రాంతం / గ్రామం) is required.")
     if not clean_ward:
         raise HTTPException(status_code=400, detail="Ward Number (వార్డు నంబర్) is required.")
+
+    # Geographic restriction check for Admin role
+    if not is_super_admin(current_user):
+        import json
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+
+        if not admin_assignments:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You do not have any active geographic assignment to upload documents."
+            )
+
+        authorized = False
+        for a in admin_assignments:
+            if clean_constituency.lower() in a.constituency.lower() or a.constituency.lower() in clean_constituency.lower():
+                ward_list = a.to_dict().get("wards", [])
+                if not ward_list or "ALL" in [w.upper() for w in ward_list]:
+                    authorized = True
+                    break
+                clean_w = re.sub(r'[^0-9a-zA-Z]', '', clean_ward.lower())
+                if any(re.sub(r'[^0-9a-zA-Z]', '', str(w).lower()) == clean_w for w in ward_list):
+                    authorized = True
+                    break
+
+        if not authorized:
+            assigned_scope = ", ".join(f"{a.constituency} (Wards: {a.to_dict().get('wards_display', 'All')})" for a in admin_assignments)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: You are not authorized to upload documents for constituency '{clean_constituency}' and ward '{clean_ward}'. Authorized scope: {assigned_scope}."
+            )
 
     # 2. Validate PDF file extension and size from settings
     allowed_exts = [e.strip().lower() for e in settings.PDF_ALLOWED_EXTENSIONS.split(",")]
@@ -896,11 +1026,26 @@ def get_documents_summary(
     db: Session = Depends(get_db)
 ):
     """
-    Dynamically compute summary KPI metrics for all uploaded documents directly from PostgreSQL.
+    Dynamically compute summary KPI metrics for uploaded documents directly from PostgreSQL.
+    Enforces RBAC and geographic scope for Admin, rejects standard Users.
     """
+    if current_user and current_user.role.lower() in ("user", "operator", "viewer"):
+        raise HTTPException(status_code=403, detail="Access denied: Standard users cannot access document management.")
+
     q = db.query(DocumentModel)
-    if current_user and current_user.role.lower() != "admin":
-        q = q.filter(DocumentModel.uploaded_by == current_user.id)
+    if current_user and not is_super_admin(current_user):
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not admin_assignments:
+            q = q.filter(DocumentModel.uploaded_by == current_user.id)
+        else:
+            conds = [DocumentModel.uploaded_by == current_user.id]
+            for a in admin_assignments:
+                if a.constituency:
+                    conds.append(DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%"))
+            q = q.filter(or_(*conds))
 
     total_docs = q.count()
     completed_docs = q.filter(DocumentModel.processing_status == "completed").count()
@@ -909,14 +1054,37 @@ def get_documents_summary(
 
     # Total storage used in bytes
     storage_q = db.query(func.coalesce(func.sum(DocumentModel.file_size), 0))
-    if current_user and current_user.role.lower() != "admin":
-        storage_q = storage_q.filter(DocumentModel.uploaded_by == current_user.id)
+    if current_user and not is_super_admin(current_user):
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not admin_assignments:
+            storage_q = storage_q.filter(DocumentModel.uploaded_by == current_user.id)
+        else:
+            conds = [DocumentModel.uploaded_by == current_user.id]
+            for a in admin_assignments:
+                if a.constituency:
+                    conds.append(DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%"))
+            storage_q = storage_q.filter(or_(*conds))
     total_storage = int(storage_q.scalar() or 0)
 
     # Total extracted voters
     voter_q = db.query(func.count(VoterRecordModel.id))
-    if current_user and current_user.role.lower() != "admin":
-        voter_q = voter_q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id).filter(DocumentModel.uploaded_by == current_user.id)
+    if current_user and not is_super_admin(current_user):
+        voter_q = voter_q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not admin_assignments:
+            voter_q = voter_q.filter(DocumentModel.uploaded_by == current_user.id)
+        else:
+            conds = [DocumentModel.uploaded_by == current_user.id]
+            for a in admin_assignments:
+                if a.constituency:
+                    conds.append(DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%"))
+            voter_q = voter_q.filter(or_(*conds))
     total_voters = int(voter_q.scalar() or 0)
 
     return {
@@ -946,11 +1114,25 @@ def list_documents(
     current_user: Optional[UserModel] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
+    if current_user and current_user.role.lower() in ("user", "operator", "viewer"):
+        raise HTTPException(status_code=403, detail="Access denied: Standard users cannot access document management.")
+
     q = db.query(DocumentModel)
 
-    # RBAC: If standard user, filter by their documents only
-    if current_user and current_user.role.lower() != "admin":
-        q = q.filter(DocumentModel.uploaded_by == current_user.id)
+    # RBAC: Scope filtering for Admin
+    if current_user and not is_super_admin(current_user):
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not admin_assignments:
+            q = q.filter(DocumentModel.uploaded_by == current_user.id)
+        else:
+            conds = [DocumentModel.uploaded_by == current_user.id]
+            for a in admin_assignments:
+                if a.constituency:
+                    conds.append(DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%"))
+            q = q.filter(or_(*conds))
     elif uploaded_by is not None:
         q = q.filter(DocumentModel.uploaded_by == uploaded_by)
 
@@ -1168,8 +1350,19 @@ def get_document_deletion_preview(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    if current_user.role.lower() != "admin" and doc.uploaded_by != current_user.id:
-        raise HTTPException(status_code=403, detail="You do not have permission to delete this document.")
+    if not is_admin_or_super(current_user):
+        raise HTTPException(status_code=403, detail="Standard users cannot delete documents.")
+
+    if not is_super_admin(current_user):
+        # Admin can delete only if uploaded by them or within their assigned geographic scope
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        assigned_consts = [a.constituency.strip().lower() for a in admin_assignments if a.constituency]
+        doc_const = (doc.constituency or "").strip().lower()
+        if doc.uploaded_by != current_user.id and not any(doc_const in c or c in doc_const for c in assigned_consts):
+            raise HTTPException(status_code=403, detail="You do not have permission to delete this document outside your geographic scope.")
 
     linked_voter_ids = [r[0] for r in db.query(VoterRecordModel.id).filter(VoterRecordModel.document_id == doc_id).all()]
     total_voters = len(linked_voter_ids)
@@ -1238,8 +1431,19 @@ def delete_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    if current_user.role.lower() != "admin" and doc.uploaded_by != current_user.id:
-        raise HTTPException(status_code=403, detail="You do not have permission to delete this document.")
+    if not is_admin_or_super(current_user):
+        raise HTTPException(status_code=403, detail="Standard users cannot delete documents.")
+
+    if not is_super_admin(current_user):
+        # Admin can delete only if uploaded by them or within their assigned geographic scope
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        assigned_consts = [a.constituency.strip().lower() for a in admin_assignments if a.constituency]
+        doc_const = (doc.constituency or "").strip().lower()
+        if doc.uploaded_by != current_user.id and not any(doc_const in c or c in doc_const for c in assigned_consts):
+            raise HTTPException(status_code=403, detail="You do not have permission to delete this document outside your geographic scope.")
 
     doc_voters = db.query(VoterRecordModel).filter(VoterRecordModel.document_id == doc_id).all()
     voter_ids = [v.id for v in doc_voters]
@@ -1447,6 +1651,7 @@ def get_document_records(
 # 10. Global Voter Records API (Paginated, Searchable, RBAC)
 # -------------------------------------------------------------
 @app.get("/api/voter-records")
+@app.get("/api/voters")
 def list_voter_records(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=500),
@@ -1457,6 +1662,7 @@ def list_voter_records(
     constituency: Optional[str] = None,
     area: Optional[str] = None,
     ward_number: Optional[str] = None,
+    search_unique_id: Optional[str] = None,
     source_page: Optional[int] = None,
     sort_by: str = "id",
     order: str = "asc",
@@ -1466,11 +1672,62 @@ def list_voter_records(
     q = db.query(VoterRecordModel)
 
     joined_doc = False
-    # Standard User can only access voter records from documents they own
-    if current_user and current_user.role.lower() != "admin":
-        q = q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
-        q = q.filter(DocumentModel.uploaded_by == current_user.id)
-        joined_doc = True
+    # RBAC & Geographic Scope Enforcement:
+    if current_user:
+        if is_super_admin(current_user):
+            # Super Admin has unrestricted global access
+            pass
+        elif is_admin(current_user):
+            # Admin sees only voter records in their assigned geographic scope
+            admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+                UserGeographicAssignmentModel.user_id == current_user.id,
+                UserGeographicAssignmentModel.status == "ACTIVE"
+            ).all()
+            if not admin_assignments:
+                return {"total": 0, "page": page, "limit": limit, "pages": 1, "records": []}
+
+            # Reject if query attempts to access an unauthorized constituency
+            if constituency and constituency.lower() != "all":
+                if not any(constituency.strip().lower() in a.constituency.strip().lower() or a.constituency.strip().lower() in constituency.strip().lower() for a in admin_assignments):
+                    raise HTTPException(status_code=403, detail=f"Access denied: Constituency '{constituency}' is outside your authorized geographic scope.")
+
+            if not joined_doc:
+                q = q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+                joined_doc = True
+            conds = []
+            for a in admin_assignments:
+                if a.constituency:
+                    conds.append(DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%"))
+            q = q.filter(or_(*conds))
+        else:
+            # Standard User sees ONLY assigned voters
+            user_assignments = db.query(UserGeographicAssignmentModel).filter(
+                UserGeographicAssignmentModel.user_id == current_user.id,
+                UserGeographicAssignmentModel.status == "ACTIVE"
+            ).all()
+            if not user_assignments:
+                return {"total": 0, "page": page, "limit": limit, "pages": 1, "records": []}
+
+            # Reject if query attempts to access an unauthorized constituency
+            if constituency and constituency.lower() != "all":
+                if not any(constituency.strip().lower() in a.constituency.strip().lower() or a.constituency.strip().lower() in constituency.strip().lower() for a in user_assignments):
+                    raise HTTPException(status_code=403, detail=f"Access denied: Constituency '{constituency}' is outside your assigned geographic scope.")
+
+            if not joined_doc:
+                q = q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+                joined_doc = True
+
+            conds = []
+            for a in user_assignments:
+                if a.constituency:
+                    c_filter = DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%")
+                    ward_list = a.to_dict().get("wards", [])
+                    if ward_list and "ALL" not in [w.upper() for w in ward_list]:
+                        w_conds = [DocumentModel.ward_number.ilike(f"%{w.strip()}%") for w in ward_list if w.strip()]
+                        if w_conds:
+                            c_filter = and_(c_filter, or_(*w_conds))
+                    conds.append(c_filter)
+            q = q.filter(or_(*conds))
 
     if (district and district != "all") or (constituency and constituency != "all") or (area and area != "all") or (ward_number and ward_number != "all"):
         if not joined_doc:
@@ -1489,10 +1746,14 @@ def list_voter_records(
     if document_id:
         q = q.filter(VoterRecordModel.document_id == document_id)
 
+    if search_unique_id and search_unique_id.strip():
+        q = q.filter(VoterRecordModel.unique_key.ilike(f"%{search_unique_id.strip()}%"))
+
     if query:
         search_filter = or_(
             VoterRecordModel.voter_name.ilike(f"%{query}%"),
             VoterRecordModel.voter_id.ilike(f"%{query}%"),
+            VoterRecordModel.unique_key.ilike(f"%{query}%"),
             VoterRecordModel.house_no.ilike(f"%{query}%"),
             VoterRecordModel.relation_name.ilike(f"%{query}%"),
             VoterRecordModel.serial_no.ilike(f"%{query}%"),
@@ -1681,19 +1942,59 @@ def search_voters(
     district: Optional[str] = None,
     constituency: Optional[str] = None,
     area: Optional[str] = None,
+    current_user: Optional[UserModel] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Search voter records with support for partial name, EPIC voter ID, house no, area, or mobile number.
-    Returns paginated voter results with their location metadata.
+    Returns paginated voter results filtered strictly by caller's geographic scope.
     """
     query = db.query(VoterRecordModel).join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+
+    # Geographic Scope Enforcement
+    if current_user:
+        if is_super_admin(current_user):
+            pass
+        elif is_admin(current_user):
+            admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+                UserGeographicAssignmentModel.user_id == current_user.id,
+                UserGeographicAssignmentModel.status == "ACTIVE"
+            ).all()
+            if not admin_assignments:
+                return {"voters": [], "total": 0, "page": page, "limit": limit, "pages": 1}
+            if constituency and constituency.lower() != "all":
+                if not any(constituency.strip().lower() in a.constituency.strip().lower() or a.constituency.strip().lower() in constituency.strip().lower() for a in admin_assignments):
+                    raise HTTPException(status_code=403, detail=f"Access denied: Constituency '{constituency}' is outside your authorized scope.")
+            conds = [DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%") for a in admin_assignments if a.constituency]
+            query = query.filter(or_(*conds))
+        else:
+            user_assignments = db.query(UserGeographicAssignmentModel).filter(
+                UserGeographicAssignmentModel.user_id == current_user.id,
+                UserGeographicAssignmentModel.status == "ACTIVE"
+            ).all()
+            if not user_assignments:
+                return {"voters": [], "total": 0, "page": page, "limit": limit, "pages": 1}
+            if constituency and constituency.lower() != "all":
+                if not any(constituency.strip().lower() in a.constituency.strip().lower() or a.constituency.strip().lower() in constituency.strip().lower() for a in user_assignments):
+                    raise HTTPException(status_code=403, detail=f"Access denied: Constituency '{constituency}' is outside your assigned scope.")
+            conds = []
+            for a in user_assignments:
+                if a.constituency:
+                    c_filter = DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%")
+                    ward_list = a.to_dict().get("wards", [])
+                    if ward_list and "ALL" not in [w.upper() for w in ward_list]:
+                        w_conds = [DocumentModel.ward_number.ilike(f"%{w.strip()}%") for w in ward_list if w.strip()]
+                        if w_conds:
+                            c_filter = and_(c_filter, or_(*w_conds))
+                    conds.append(c_filter)
+            query = query.filter(or_(*conds))
 
     if q and q.strip():
         term = q.strip()
         clean_digits = re.sub(r"\D", "", term)
         search_conditions = [
             VoterRecordModel.voter_id.ilike(f"%{term}%"),
+            VoterRecordModel.unique_key.ilike(f"%{term}%"),
             VoterRecordModel.voter_name.ilike(f"%{term}%"),
             VoterRecordModel.relation_name.ilike(f"%{term}%"),
             VoterRecordModel.house_no.ilike(f"%{term}%"),
@@ -1726,14 +2027,300 @@ def search_voters(
         "pages": (total + limit - 1) // limit if limit > 0 else 1
     }
 
-@app.get("/api/voters/{voter_id}", tags=["Voter Search & Entries"])
-def get_voter_details(voter_id: str, db: Session = Depends(get_db)):
+# -------------------------------------------------------------
+# 14. Voter Search, Entries, and A4 PDF Generation (27 per page)
+# -------------------------------------------------------------
+
+class SelectedVotersPdfRequest(BaseModel):
+    voter_ids: List[Any] = Field(..., description="List of voter record IDs, EPIC numbers, or Unique Keys")
+
+class GenerateVoterListPdfRequest(BaseModel):
+    district: Optional[str] = None
+    constituency: Optional[str] = None
+    ward_number: Optional[str] = None
+    area: Optional[str] = None
+    document_id: Optional[str] = None
+    query: Optional[str] = None
+    search_unique_id: Optional[str] = None
+    gender: Optional[str] = None
+
+def _check_voter_geographic_scope(voter: VoterRecordModel, current_user: Optional[UserModel], db: Session):
     """
-    Fetch complete voter details and previous entries by database record ID or EPIC voter ID.
+    Enforces strict RBAC geographic scoping:
+    - Super Admin: global access
+    - Admin: voter's document constituency must match admin's assigned constituencies
+    - User: voter's document constituency and ward must match user's assigned scope
+    Raises HTTP 403 Forbidden on violation.
+    """
+    if not current_user or is_super_admin(current_user):
+        return
+
+    doc = voter.document if hasattr(voter, "document") and voter.document else db.query(DocumentModel).filter(DocumentModel.id == voter.document_id).first()
+    voter_constituency = (doc.constituency if doc else "") or ""
+    voter_ward = (doc.ward_number if doc else "") or ""
+
+    if is_admin(current_user):
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not admin_assignments:
+            raise HTTPException(status_code=403, detail="Access denied: No active geographic assignments found for Admin.")
+        allowed = any(
+            a.constituency and (
+                a.constituency.strip().lower() in voter_constituency.strip().lower() or
+                voter_constituency.strip().lower() in a.constituency.strip().lower()
+            )
+            for a in admin_assignments
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Access denied: Voter is outside your authorized geographic scope.")
+    else:
+        # Standard User / Operator / Viewer
+        user_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not user_assignments:
+            raise HTTPException(status_code=403, detail="Access denied: No active geographic assignments found for User.")
+        allowed = False
+        for a in user_assignments:
+            if not a.constituency:
+                continue
+            c_match = (
+                a.constituency.strip().lower() in voter_constituency.strip().lower() or
+                voter_constituency.strip().lower() in a.constituency.strip().lower()
+            )
+            if c_match:
+                ward_list = a.to_dict().get("wards", [])
+                if not ward_list or "ALL" in [w.upper() for w in ward_list]:
+                    allowed = True
+                    break
+                if any(w.strip().lower() in voter_ward.strip().lower() or voter_ward.strip().lower() in w.strip().lower() for w in ward_list if w.strip()):
+                    allowed = True
+                    break
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Access denied: Voter is outside your assigned geographic scope.")
+
+@app.get("/api/voters/{voter_id}/pdf", tags=["Voter PDF Generation"])
+def generate_individual_voter_pdf(
+    voter_id: str,
+    current_user: Optional[UserModel] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate an A4 PDF containing an individual voter record with genuine photo,
+    details, and permanent 5-character Unique Key.
+    Enforces RBAC geographic scope.
     """
     voter = None
     if voter_id.isdigit():
         voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == int(voter_id)).first()
+    if not voter:
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.unique_key == voter_id.upper()).first()
+    if not voter:
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.voter_id == voter_id).first()
+
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter record not found.")
+
+    _check_voter_geographic_scope(voter, current_user, db)
+
+    pdf_bytes = generate_voters_a4_pdf([voter])
+    uk = voter.unique_key or "voter"
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="voter_{uk}.pdf"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+
+@app.post("/api/voters/pdf/selected", tags=["Voter PDF Generation"])
+def generate_selected_voters_pdf(
+    body: SelectedVotersPdfRequest,
+    current_user: Optional[UserModel] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate an A4 PDF containing selected voter records (27 voters per page, 3 cols x 9 rows).
+    Enforces RBAC: returns 403 if any selected voter is outside caller's geographic scope.
+    """
+    if not body.voter_ids:
+        raise HTTPException(status_code=400, detail="No voter IDs provided.")
+
+    numeric_ids = [int(i) for i in body.voter_ids if str(i).isdigit()]
+    string_ids = [str(i) for i in body.voter_ids if not str(i).isdigit()]
+
+    q = db.query(VoterRecordModel)
+    conds = []
+    if numeric_ids:
+        conds.append(VoterRecordModel.id.in_(numeric_ids))
+    if string_ids:
+        conds.append(VoterRecordModel.voter_id.in_(string_ids))
+        conds.append(VoterRecordModel.unique_key.in_([s.upper() for s in string_ids]))
+
+    if not conds:
+        raise HTTPException(status_code=400, detail="Invalid voter IDs provided.")
+
+    voters = q.filter(or_(*conds)).order_by(VoterRecordModel.id.asc()).all()
+
+    if not voters:
+        raise HTTPException(status_code=404, detail="No matching voter records found.")
+
+    # Scope validation for each selected voter
+    for voter in voters:
+        _check_voter_geographic_scope(voter, current_user, db)
+
+    pdf_bytes = generate_voters_a4_pdf(voters)
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'inline; filename="voter_list_selected.pdf"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+
+@app.post("/api/voters/pdf/generate", tags=["Voter PDF Generation"])
+@app.get("/api/voters/pdf/generate", tags=["Voter PDF Generation"])
+def generate_filtered_voter_list_pdf(
+    body: Optional[GenerateVoterListPdfRequest] = None,
+    district: Optional[str] = Query(None),
+    constituency: Optional[str] = Query(None),
+    ward_number: Optional[str] = Query(None),
+    area: Optional[str] = Query(None),
+    document_id: Optional[str] = Query(None),
+    query: Optional[str] = Query(None),
+    search_unique_id: Optional[str] = Query(None),
+    gender: Optional[str] = Query(None),
+    current_user: Optional[UserModel] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate complete or filtered Voter List A4 PDF (27 voters per page, 3 cols x 9 rows).
+    Accepts filter parameters in JSON body or query parameters.
+    Enforces RBAC geographic scope.
+    """
+    eff_district = (body.district if body and body.district is not None else district)
+    eff_constituency = (body.constituency if body and body.constituency is not None else constituency)
+    eff_ward = (body.ward_number if body and body.ward_number is not None else ward_number)
+    eff_area = (body.area if body and body.area is not None else area)
+    eff_document_id = (body.document_id if body and body.document_id is not None else document_id)
+    eff_query = (body.query if body and body.query is not None else query)
+    eff_search_unique_id = (body.search_unique_id if body and body.search_unique_id is not None else search_unique_id)
+    eff_gender = (body.gender if body and body.gender is not None else gender)
+
+    q = db.query(VoterRecordModel)
+    joined_doc = False
+
+    # RBAC Geographic Scope Enforcement
+    if current_user:
+        if is_super_admin(current_user):
+            pass
+        elif is_admin(current_user):
+            admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+                UserGeographicAssignmentModel.user_id == current_user.id,
+                UserGeographicAssignmentModel.status == "ACTIVE"
+            ).all()
+            if not admin_assignments:
+                raise HTTPException(status_code=403, detail="Access denied: No active geographic assignments found for Admin.")
+
+            if eff_constituency and eff_constituency.lower() != "all":
+                if not any(eff_constituency.strip().lower() in a.constituency.strip().lower() or a.constituency.strip().lower() in eff_constituency.strip().lower() for a in admin_assignments):
+                    raise HTTPException(status_code=403, detail=f"Access denied: Constituency '{eff_constituency}' is outside your authorized geographic scope.")
+
+            if not joined_doc:
+                q = q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+                joined_doc = True
+            conds = [DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%") for a in admin_assignments if a.constituency]
+            q = q.filter(or_(*conds))
+        else:
+            # Standard User
+            user_assignments = db.query(UserGeographicAssignmentModel).filter(
+                UserGeographicAssignmentModel.user_id == current_user.id,
+                UserGeographicAssignmentModel.status == "ACTIVE"
+            ).all()
+            if not user_assignments:
+                raise HTTPException(status_code=403, detail="Access denied: No active geographic assignments found for User.")
+
+            if eff_constituency and eff_constituency.lower() != "all":
+                if not any(eff_constituency.strip().lower() in a.constituency.strip().lower() or a.constituency.strip().lower() in eff_constituency.strip().lower() for a in user_assignments):
+                    raise HTTPException(status_code=403, detail=f"Access denied: Constituency '{eff_constituency}' is outside your assigned geographic scope.")
+
+            if not joined_doc:
+                q = q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+                joined_doc = True
+
+            conds = []
+            for a in user_assignments:
+                if a.constituency:
+                    c_filter = DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%")
+                    ward_list = a.to_dict().get("wards", [])
+                    if ward_list and "ALL" not in [w.upper() for w in ward_list]:
+                        w_conds = [DocumentModel.ward_number.ilike(f"%{w.strip()}%") for w in ward_list if w.strip()]
+                        if w_conds:
+                            c_filter = and_(c_filter, or_(*w_conds))
+                    conds.append(c_filter)
+            q = q.filter(or_(*conds))
+
+    if (eff_district and eff_district != "all") or (eff_constituency and eff_constituency != "all") or (eff_area and eff_area != "all") or (eff_ward and eff_ward != "all"):
+        if not joined_doc:
+            q = q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id)
+            joined_doc = True
+
+    if eff_district and eff_district != "all":
+        q = q.filter(DocumentModel.district.ilike(f"%{eff_district}%"))
+    if eff_constituency and eff_constituency != "all":
+        q = q.filter(DocumentModel.constituency.ilike(f"%{eff_constituency}%"))
+    if eff_area and eff_area != "all":
+        q = q.filter(DocumentModel.area.ilike(f"%{eff_area}%"))
+    if eff_ward and eff_ward != "all":
+        q = q.filter(DocumentModel.ward_number.ilike(f"%{eff_ward}%"))
+
+    if eff_document_id:
+        q = q.filter(VoterRecordModel.document_id == eff_document_id)
+
+    if eff_search_unique_id and eff_search_unique_id.strip():
+        q = q.filter(VoterRecordModel.unique_key.ilike(f"%{eff_search_unique_id.strip()}%"))
+
+    if eff_query:
+        search_filter = or_(
+            VoterRecordModel.voter_name.ilike(f"%{eff_query}%"),
+            VoterRecordModel.voter_id.ilike(f"%{eff_query}%"),
+            VoterRecordModel.unique_key.ilike(f"%{eff_query}%"),
+            VoterRecordModel.house_no.ilike(f"%{eff_query}%"),
+            VoterRecordModel.relation_name.ilike(f"%{eff_query}%"),
+            VoterRecordModel.serial_no.ilike(f"%{eff_query}%"),
+            VoterRecordModel.electoral_roll_no.ilike(f"%{eff_query}%")
+        )
+        q = q.filter(search_filter)
+
+    if eff_gender and eff_gender != "all":
+        q = q.filter(VoterRecordModel.gender.ilike(f"%{eff_gender}%"))
+
+    voters = q.order_by(asc(VoterRecordModel.id)).all()
+    pdf_bytes = generate_voters_a4_pdf(voters)
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'inline; filename="voter_list.pdf"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+
+@app.get("/api/voters/{voter_id}", tags=["Voter Search & Entries"])
+def get_voter_details(voter_id: str, db: Session = Depends(get_db)):
+    """
+    Fetch complete voter details and previous entries by database record ID, unique key, or EPIC voter ID.
+    """
+    voter = None
+    if voter_id.isdigit():
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == int(voter_id)).first()
+    if not voter:
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.unique_key == voter_id.upper()).first()
     if not voter:
         voter = db.query(VoterRecordModel).filter(VoterRecordModel.voter_id == voter_id).first()
 
@@ -1752,6 +2339,8 @@ def get_voter_entries(voter_id: str, db: Session = Depends(get_db)):
     voter = None
     if voter_id.isdigit():
         voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == int(voter_id)).first()
+    if not voter:
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.unique_key == voter_id.upper()).first()
     if not voter:
         voter = db.query(VoterRecordModel).filter(VoterRecordModel.voter_id == voter_id).first()
 
@@ -2629,10 +3218,39 @@ def search_voters_for_payments(
             )
         )
         .distinct()
-        .limit(limit)
     )
 
-    voters = query.all()
+    if is_super_admin(current_user):
+        pass
+    elif is_admin(current_user):
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not admin_assignments:
+            return []
+        conds = [DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%") for a in admin_assignments if a.constituency]
+        query = query.filter(or_(*conds))
+    else:
+        user_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not user_assignments:
+            return []
+        conds = []
+        for a in user_assignments:
+            if a.constituency:
+                c_filter = DocumentModel.constituency.ilike(f"%{a.constituency.strip()}%")
+                ward_list = a.to_dict().get("wards", [])
+                if ward_list and "ALL" not in [w.upper() for w in ward_list]:
+                    w_conds = [DocumentModel.ward_number.ilike(f"%{w.strip()}%") for w in ward_list if w.strip()]
+                    if w_conds:
+                        c_filter = and_(c_filter, or_(*w_conds))
+                conds.append(c_filter)
+        query = query.filter(or_(*conds))
+
+    voters = query.limit(limit).all()
     return [v.to_dict() for v in voters]
 
 @app.get("/api/payments/voters/{voter_id}/history", tags=["Payments Dashboard"])
@@ -3321,9 +3939,10 @@ def get_payment_receipt(
 # 16. Complete RBAC APIs (Roles, Permissions, User Mapping, Audit)
 # -------------------------------------------------------------
 
+@app.get("/api/admin/roles", tags=["RBAC Module"])
 @app.get("/api/rbac/roles", tags=["RBAC Module"])
 def list_rbac_roles(
-    current_user: UserModel = Depends(get_current_user),
+    current_user: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """List all system and custom roles with their assigned permissions and user counts."""
@@ -3377,7 +3996,7 @@ def create_rbac_role(
     }
 
 @app.get("/api/rbac/roles/{role_id}", tags=["RBAC Module"])
-def get_rbac_role(role_id: int, db: Session = Depends(get_db)):
+def get_rbac_role(role_id: int, current_user: UserModel = Depends(require_admin), db: Session = Depends(get_db)):
     role = db.query(RoleModel).filter(RoleModel.id == role_id).first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found.")
@@ -3545,7 +4164,7 @@ def get_my_permissions(
         "user_id": current_user.id,
         "username": current_user.username,
         "role": current_user.role,
-        "is_admin": current_user.role.lower() == "admin",
+        "is_admin": is_admin_or_super(current_user),
         "permissions": sorted(list(perms))
     }
 
@@ -3597,6 +4216,42 @@ class UpdateGeographicAssignmentRequest(BaseModel):
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     status: Optional[str] = None
+
+class CreateDistrictRequest(BaseModel):
+    name: str
+    code: Optional[str] = None
+    state: Optional[str] = "Andhra Pradesh"
+
+class UpdateDistrictRequest(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    state: Optional[str] = None
+
+class CreateConstituencyRequest(BaseModel):
+    name: str
+    code: Optional[str] = None
+    district_id: Optional[int] = None
+    district_name: str
+
+class UpdateConstituencyRequest(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    district_id: Optional[int] = None
+    district_name: Optional[str] = None
+
+class CreateWardRequest(BaseModel):
+    ward_number: str
+    constituency_id: Optional[int] = None
+    constituency_name: str
+    area_name: Optional[str] = None
+    description: Optional[str] = None
+
+class UpdateWardRequest(BaseModel):
+    ward_number: Optional[str] = None
+    constituency_id: Optional[int] = None
+    constituency_name: Optional[str] = None
+    area_name: Optional[str] = None
+    description: Optional[str] = None
 
 class AssignVoterAmountRequest(BaseModel):
     voter_id: int
@@ -3984,6 +4639,21 @@ def list_user_geographic_assignments(
     db: Session = Depends(get_db)
 ):
     q = db.query(UserGeographicAssignmentModel)
+    if not is_super_admin(current_admin):
+        # Admin sees only assignments created by them or within their assigned constituencies
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_admin.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        admin_constituencies = [a.constituency for a in admin_assignments if a.constituency]
+        if not admin_constituencies:
+            q = q.filter(UserGeographicAssignmentModel.assigned_by == current_admin.id)
+        else:
+            conds = [UserGeographicAssignmentModel.assigned_by == current_admin.id]
+            for c in admin_constituencies:
+                conds.append(UserGeographicAssignmentModel.constituency.ilike(f"%{c.strip()}%"))
+            q = q.filter(or_(*conds))
+
     if user_id:
         q = q.filter(UserGeographicAssignmentModel.user_id == user_id)
     if constituency:
@@ -4003,6 +4673,44 @@ def create_user_geographic_assignment(
     u = db.query(UserModel).filter(UserModel.id == req.user_id).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found.")
+
+    # Privilege and scope validation
+    if not is_super_admin(current_admin):
+        # Admin cannot assign other Admins or Super Admins
+        if u.role in ("admin", "super_admin", "superadmin"):
+            raise HTTPException(status_code=403, detail="Admins can only assign geographic access to standard Users.")
+
+        # Admin can ONLY assign within their authorized geographic scope
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_admin.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        if not admin_assignments:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: You do not have any active geographic assignment to delegate to users."
+            )
+
+        authorized = False
+        for a in admin_assignments:
+            # Constituency match check
+            if req.constituency.strip().lower() in a.constituency.strip().lower() or a.constituency.strip().lower() in req.constituency.strip().lower():
+                ward_list = a.to_dict().get("wards", [])
+                if not ward_list or "ALL" in [w.upper() for w in ward_list]:
+                    authorized = True
+                    break
+                clean_admin_wards = [re.sub(r'[^0-9a-zA-Z]', '', str(w).lower()) for w in ward_list]
+                clean_user_wards = [re.sub(r'[^0-9a-zA-Z]', '', str(w).lower()) for w in req.wards]
+                if all(w in clean_admin_wards for w in clean_user_wards):
+                    authorized = True
+                    break
+
+        if not authorized:
+            allowed_scope = ", ".join(f"{a.constituency} (Wards: {a.to_dict().get('wards_display', 'All')})" for a in admin_assignments)
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access denied: You can only assign users within your authorized geographic scope: {allowed_scope}."
+            )
 
     wards_json = json.dumps(req.wards)
     assignment = UserGeographicAssignmentModel(
@@ -4042,6 +4750,11 @@ def update_user_geographic_assignment(
     if not a:
         raise HTTPException(status_code=404, detail="Geographic assignment not found.")
 
+    if not is_super_admin(current_admin):
+        # Admin can only update assignments they created or for users in their scope
+        if a.assigned_by != current_admin.id:
+            raise HTTPException(status_code=403, detail="Admins cannot modify assignments created by other administrators.")
+
     if req.district is not None:
         a.district = req.district.strip()
     if req.constituency is not None:
@@ -4079,6 +4792,9 @@ def delete_user_geographic_assignment(
     if not a:
         raise HTTPException(status_code=404, detail="Geographic assignment not found.")
 
+    if not is_super_admin(current_admin) and a.assigned_by != current_admin.id:
+        raise HTTPException(status_code=403, detail="Admins cannot delete assignments created by other administrators.")
+
     user_name = a.user.username if a.user else str(a.user_id)
     db.delete(a)
     db.add(AuditLogModel(
@@ -4091,20 +4807,265 @@ def delete_user_geographic_assignment(
     db.commit()
     return {"status": "ok", "message": "Assignment revoked successfully."}
 
+# --- Constituency & Ward Master Management (Super Admin ONLY for mutations) ---
+
+@app.get("/api/admin/districts", tags=["Master Geographic Management"])
+def list_districts(
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    districts = db.query(DistrictModel).order_by(DistrictModel.name.asc()).all()
+    return [d.to_dict() for d in districts]
+
+@app.post("/api/admin/districts", tags=["Master Geographic Management"], status_code=status.HTTP_201_CREATED)
+def create_district(
+    req: CreateDistrictRequest,
+    current_super: UserModel = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    name = req.name.strip()
+    if db.query(DistrictModel).filter(DistrictModel.name.ilike(name)).first():
+        raise HTTPException(status_code=400, detail=f"District '{name}' already exists.")
+    d = DistrictModel(name=name, code=req.code.strip() if req.code else None, state=req.state or "Andhra Pradesh")
+    db.add(d)
+    db.commit()
+    db.refresh(d)
+    return d.to_dict()
+
+@app.put("/api/admin/districts/{district_id}", tags=["Master Geographic Management"])
+def update_district(
+    district_id: int,
+    req: UpdateDistrictRequest,
+    current_super: UserModel = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    d = db.query(DistrictModel).filter(DistrictModel.id == district_id).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="District not found.")
+    if req.name is not None:
+        d.name = req.name.strip()
+    if req.code is not None:
+        d.code = req.code.strip() if req.code else None
+    if req.state is not None:
+        d.state = req.state.strip()
+    d.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(d)
+    return d.to_dict()
+
+@app.delete("/api/admin/districts/{district_id}", tags=["Master Geographic Management"])
+def delete_district(
+    district_id: int,
+    current_super: UserModel = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    d = db.query(DistrictModel).filter(DistrictModel.id == district_id).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="District not found.")
+    db.delete(d)
+    db.commit()
+    return {"status": "ok", "message": f"District #{district_id} deleted successfully."}
+
+@app.get("/api/admin/constituencies", tags=["Master Geographic Management"])
+def list_constituencies(
+    district_id: Optional[int] = None,
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    q = db.query(ConstituencyModel)
+    if district_id:
+        q = q.filter(ConstituencyModel.district_id == district_id)
+    if not is_super_admin(current_user):
+        # Admin sees only their assigned constituencies
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        admin_constituencies = [a.constituency for a in admin_assignments if a.constituency]
+        if not admin_constituencies:
+            return []
+        conds = [ConstituencyModel.name.ilike(f"%{c.strip()}%") for c in admin_constituencies]
+        q = q.filter(or_(*conds))
+    constituencies = q.order_by(ConstituencyModel.name.asc()).all()
+    return [c.to_dict() for c in constituencies]
+
+@app.post("/api/admin/constituencies", tags=["Master Geographic Management"], status_code=status.HTTP_201_CREATED)
+def create_constituency(
+    req: CreateConstituencyRequest,
+    current_super: UserModel = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    name = req.name.strip()
+    dist_name = req.district_name.strip()
+    c = ConstituencyModel(
+        name=name,
+        code=req.code.strip() if req.code else None,
+        district_id=req.district_id,
+        district_name=dist_name
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return c.to_dict()
+
+@app.put("/api/admin/constituencies/{constituency_id}", tags=["Master Geographic Management"])
+def update_constituency(
+    constituency_id: int,
+    req: UpdateConstituencyRequest,
+    current_super: UserModel = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    c = db.query(ConstituencyModel).filter(ConstituencyModel.id == constituency_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Constituency not found.")
+    if req.name is not None:
+        c.name = req.name.strip()
+    if req.code is not None:
+        c.code = req.code.strip() if req.code else None
+    if req.district_id is not None:
+        c.district_id = req.district_id
+    if req.district_name is not None:
+        c.district_name = req.district_name.strip()
+    c.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(c)
+    return c.to_dict()
+
+@app.delete("/api/admin/constituencies/{constituency_id}", tags=["Master Geographic Management"])
+def delete_constituency(
+    constituency_id: int,
+    current_super: UserModel = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    c = db.query(ConstituencyModel).filter(ConstituencyModel.id == constituency_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Constituency not found.")
+    db.delete(c)
+    db.commit()
+    return {"status": "ok", "message": f"Constituency #{constituency_id} deleted successfully."}
+
+@app.get("/api/admin/wards", tags=["Master Geographic Management"])
+def list_wards(
+    constituency_id: Optional[int] = None,
+    current_user: UserModel = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    q = db.query(WardModel)
+    if constituency_id:
+        q = q.filter(WardModel.constituency_id == constituency_id)
+    if not is_super_admin(current_user):
+        admin_assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        admin_constituencies = [a.constituency for a in admin_assignments if a.constituency]
+        if not admin_constituencies:
+            return []
+        conds = [WardModel.constituency_name.ilike(f"%{c.strip()}%") for c in admin_constituencies]
+        q = q.filter(or_(*conds))
+    wards = q.order_by(WardModel.ward_number.asc()).all()
+    return [w.to_dict() for w in wards]
+
+@app.post("/api/admin/wards", tags=["Master Geographic Management"], status_code=status.HTTP_201_CREATED)
+def create_ward(
+    req: CreateWardRequest,
+    current_super: UserModel = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    w = WardModel(
+        ward_number=req.ward_number.strip(),
+        constituency_id=req.constituency_id,
+        constituency_name=req.constituency_name.strip(),
+        area_name=req.area_name.strip() if req.area_name else None,
+        description=req.description.strip() if req.description else None
+    )
+    db.add(w)
+    db.commit()
+    db.refresh(w)
+    return w.to_dict()
+
+@app.put("/api/admin/wards/{ward_id}", tags=["Master Geographic Management"])
+def update_ward(
+    ward_id: int,
+    req: UpdateWardRequest,
+    current_super: UserModel = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    w = db.query(WardModel).filter(WardModel.id == ward_id).first()
+    if not w:
+        raise HTTPException(status_code=404, detail="Ward not found.")
+    if req.ward_number is not None:
+        w.ward_number = req.ward_number.strip()
+    if req.constituency_id is not None:
+        w.constituency_id = req.constituency_id
+    if req.constituency_name is not None:
+        w.constituency_name = req.constituency_name.strip()
+    if req.area_name is not None:
+        w.area_name = req.area_name.strip() if req.area_name else None
+    if req.description is not None:
+        w.description = req.description.strip() if req.description else None
+    w.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(w)
+    return w.to_dict()
+
+@app.delete("/api/admin/wards/{ward_id}", tags=["Master Geographic Management"])
+def delete_ward(
+    ward_id: int,
+    current_super: UserModel = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    w = db.query(WardModel).filter(WardModel.id == ward_id).first()
+    if not w:
+        raise HTTPException(status_code=404, detail="Ward not found.")
+    db.delete(w)
+    db.commit()
+    return {"status": "ok", "message": f"Ward #{ward_id} deleted successfully."}
+
 @app.get("/api/admin/locations", tags=["Geographic Assignment"])
 def get_available_locations(
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Return distinct districts, constituencies, and wards present in documents."""
-    districts = [r[0] for r in db.query(DocumentModel.district).filter(DocumentModel.district.isnot(None), DocumentModel.district != "").distinct().all()]
-    constituencies = [r[0] for r in db.query(DocumentModel.constituency).filter(DocumentModel.constituency.isnot(None), DocumentModel.constituency != "").distinct().all()]
-    wards = [r[0] for r in db.query(DocumentModel.ward_number).filter(DocumentModel.ward_number.isnot(None), DocumentModel.ward_number != "").distinct().all()]
-    return {
-        "districts": sorted(districts),
-        "constituencies": sorted(constituencies),
-        "wards": sorted(wards)
-    }
+    """Return distinct districts, constituencies, and wards filtered by user's role and scope."""
+    if is_super_admin(current_user):
+        dist_names = [d.name for d in db.query(DistrictModel).order_by(DistrictModel.name).all()]
+        const_names = [c.name for c in db.query(ConstituencyModel).order_by(ConstituencyModel.name).all()]
+        ward_nums = [w.ward_number for w in db.query(WardModel).order_by(WardModel.ward_number).all()]
+        if not dist_names:
+            dist_names = [r[0] for r in db.query(DocumentModel.district).filter(DocumentModel.district.isnot(None), DocumentModel.district != "").distinct().all()]
+        if not const_names:
+            const_names = [r[0] for r in db.query(DocumentModel.constituency).filter(DocumentModel.constituency.isnot(None), DocumentModel.constituency != "").distinct().all()]
+        if not ward_nums:
+            ward_nums = [r[0] for r in db.query(DocumentModel.ward_number).filter(DocumentModel.ward_number.isnot(None), DocumentModel.ward_number != "").distinct().all()]
+        return {
+            "districts": sorted(list(set(dist_names))),
+            "constituencies": sorted(list(set(const_names))),
+            "wards": sorted(list(set(ward_nums)))
+        }
+    else:
+        # Admin or User sees only their assigned geographic scope
+        assignments = db.query(UserGeographicAssignmentModel).filter(
+            UserGeographicAssignmentModel.user_id == current_user.id,
+            UserGeographicAssignmentModel.status == "ACTIVE"
+        ).all()
+        districts = set()
+        constituencies = set()
+        wards = set()
+        for a in assignments:
+            if a.district:
+                districts.add(a.district)
+            if a.constituency:
+                constituencies.add(a.constituency)
+            ward_list = a.to_dict().get("wards", [])
+            for w in ward_list:
+                if w and str(w).upper() != "ALL":
+                    wards.add(str(w))
+        return {
+            "districts": sorted(list(districts)),
+            "constituencies": sorted(list(constituencies)),
+            "wards": sorted(list(wards))
+        }
 
 # --- User Wallet Endpoints (Current User) ---
 
@@ -4119,7 +5080,7 @@ def get_current_user_wallet(
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    is_admin = current_user.role.lower() == "admin"
+    is_admin = is_admin_or_super(current_user)
     if is_admin:
         wallet = get_or_create_admin_wallet(db, current_user.id)
         total_allocated = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
@@ -4176,7 +5137,7 @@ def get_current_user_wallet_transactions(
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    if current_user.role.lower() == "admin":
+    if is_admin_or_super(current_user):
         wallet = get_or_create_admin_wallet(db, current_user.id)
     else:
         wallet = get_or_create_user_wallet(db, current_user.id)
@@ -4318,7 +5279,7 @@ def assign_voter_amount(
     if req.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be greater than zero.")
 
-    is_admin = current_user.role.lower() == "admin"
+    is_admin = is_admin_or_super(current_user)
 
     # Idempotency check
     if req.idempotency_key:
@@ -4555,7 +5516,7 @@ def reverse_voter_allocation(
     if not wallet:
         # Fallback to user's wallet
         alloc_user = db.query(UserModel).filter(UserModel.id == alloc.user_id).first()
-        is_alloc_admin = alloc_user and alloc_user.role.lower() == "admin"
+        is_alloc_admin = alloc_user and is_admin_or_super(alloc_user)
         if is_alloc_admin:
             wallet = db.query(WalletModel).filter(
                 WalletModel.owner_type == "ADMIN",

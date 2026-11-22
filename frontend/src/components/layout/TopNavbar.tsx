@@ -1,6 +1,6 @@
 import React from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
-import { Menu, UploadCloud, Bell, User, LogOut, Shield } from 'lucide-react';
+import { Menu, UploadCloud } from 'lucide-react';
 import { ThemeToggle } from '../common/ThemeToggle';
 import { useDocuments } from '../../contexts/DocumentContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -24,13 +24,17 @@ const pageTitles: Record<string, string> = {
   '/wallets': 'Admin Wallet Hub & Treasury',
   '/my-wallet': 'Spend on Voter & Field Disbursal',
   '/settings': 'Application Settings',
+  '/constituency-management': 'Master Constituency Management',
+  '/ward-management': 'Master Ward & Area Management',
+  '/user-assignments': 'User Geographic Assignments',
+  '/reports': 'Reports & Data Export',
 };
 
 export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenSidebar }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const { backendOnline, activeDoc } = useDocuments();
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user, isAuthenticated, isSuperAdmin, isAdmin } = useAuth();
 
   const title = pageTitles[location.pathname] || 'VMS';
 
@@ -76,8 +80,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenSidebar }) => {
         {/* Theme Toggle */}
         <ThemeToggle />
 
-        {/* Quick Upload Button */}
-        {location.pathname !== '/upload' && (
+        {/* Quick Upload Button (Admin & Super Admin only) */}
+        {location.pathname !== '/upload' && (isSuperAdmin || isAdmin) && (
           <button
             onClick={() => navigate('/upload')}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-semibold shadow-sm transition-all"
@@ -98,23 +102,31 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenSidebar }) => {
               <div className="w-7 h-7 rounded-full bg-brand-600 text-white text-[11px] font-bold flex items-center justify-center">
                 {user.full_name?.charAt(0).toUpperCase() || user.username.charAt(0).toUpperCase()}
               </div>
-              <div className="hidden md:block text-left text-xs">
-                <p className="font-semibold text-slate-800 dark:text-slate-200 leading-none">
+              <div className="hidden md:block text-left">
+                <span className="block text-xs font-semibold text-slate-800 dark:text-slate-200 leading-tight">
                   {user.full_name?.split(' ')[0] || user.username}
-                </p>
-                <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
+                </span>
+                <span
+                  className={`block text-[10px] font-bold uppercase leading-none ${
+                    isSuperAdmin
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : isAdmin
+                      ? 'text-purple-600 dark:text-purple-400'
+                      : 'text-emerald-600 dark:text-emerald-400'
+                  }`}
+                >
                   {user.role}
                 </span>
               </div>
             </Link>
           </div>
         ) : (
-          <Link
-            to="/login"
-            className="px-3 py-1.5 border border-brand-600 text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950 rounded-xl text-xs font-semibold"
+          <button
+            onClick={() => navigate('/login')}
+            className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold"
           >
             Sign In
-          </Link>
+          </button>
         )}
       </div>
     </header>

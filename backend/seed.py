@@ -39,7 +39,7 @@ def seed_database():
                 email=admin_email,
                 username=admin_username,
                 password_hash=hash_password(admin_password),
-                role="admin",
+                role="super_admin",
                 is_active=True,
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc)
@@ -47,9 +47,12 @@ def seed_database():
             db.add(admin_user)
             db.commit()
             db.refresh(admin_user)
-            print(f"[Seed] Created default Admin: username='{admin_username}', email='{admin_email}'")
+            print(f"[Seed] Created default Super Admin: username='{admin_username}', email='{admin_email}'")
         else:
-            print(f"[Seed] Admin user '{admin_user.username}' already exists. Preserving existing account.")
+            if admin_user.role != "super_admin":
+                admin_user.role = "super_admin"
+                db.commit()
+            print(f"[Seed] Admin user '{admin_user.username}' already exists (role='{admin_user.role}'). Preserving existing account.")
 
         # Associate unassigned existing documents to Admin and set default location if missing
         existing_docs = db.query(DocumentModel).all()
