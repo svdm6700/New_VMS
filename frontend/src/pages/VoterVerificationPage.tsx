@@ -14,14 +14,7 @@ import {
   FileText,
   RefreshCw,
   Copy,
-  Check,
-  Wallet,
-  CreditCard,
-  TrendingDown,
-  Clock,
-  Save,
-  AlertTriangle,
-  Receipt
+  Check
 } from 'lucide-react';
 import { documentService } from '../services/documentService';
 import { VerifiedVoter } from '../types/document';
@@ -36,26 +29,12 @@ export const VoterVerificationPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [voter, setVoter] = useState<VerifiedVoter | null>(null);
   const [copied, setCopied] = useState(false);
-  const [copiedTx, setCopiedTx] = useState(false);
 
-  // Payment & Remarks State
-  const [remarks, setRemarks] = useState('');
-  const [isPaid, setIsPaid] = useState(false);
-  const [walletBalance, setWalletBalance] = useState<number>(0);
-  const [applicableAmount, setApplicableAmount] = useState<number>(500);
-  const [transactionId, setTransactionId] = useState('');
-  const [transactionDate, setTransactionDate] = useState('');
-  const [deductedAmount, setDeductedAmount] = useState<number>(500);
-  const [paidBy, setPaidBy] = useState('');
-
-  // Actions Loading & Feedback
+  // Submit State
   const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
-  const [isUpdatingRemarks, setIsUpdatingRemarks] = useState(false);
-  const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
+  const [isPaid, setIsPaid] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
-  const [remarksSuccess, setRemarksSuccess] = useState<string | null>(null);
-  const [remarksError, setRemarksError] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -66,21 +45,12 @@ export const VoterVerificationPage: React.FC = () => {
     }
   }, [voter]);
 
-  // Synchronize state when voter data is loaded
+  // Synchronize payment status when voter details load
   useEffect(() => {
     if (voter) {
-      setRemarks(voter.remarks || '');
       setIsPaid(Boolean(voter.is_paid));
-      setWalletBalance(voter.user_wallet_balance ?? 0);
-      setApplicableAmount(voter.applicable_amount ?? 500);
-      setTransactionId(voter.transaction_id || '');
-      setTransactionDate(voter.transaction_date || '');
-      setDeductedAmount(voter.deducted_amount || voter.applicable_amount || 500);
-      setPaidBy(voter.paid_by || '');
-      setPaymentSuccess(null);
+      setPaymentSuccess(voter.is_paid ? 'This voter is already PAID.' : null);
       setPaymentError(null);
-      setRemarksSuccess(null);
-      setRemarksError(null);
     }
   }, [voter]);
 
@@ -125,7 +95,8 @@ export const VoterVerificationPage: React.FC = () => {
       if (status === 404) {
         setNotFoundError('Invalid Voter Code');
       } else if (status === 403) {
-        setApiError('Access Denied: This voter is outside your assigned geographic scope.');
+        const msg = err.response?.data?.detail || 'This voter does not belong to your assigned Ward.';
+        setApiError(msg);
       } else {
         const msg = err.response?.data?.detail || err.message || 'An error occurred while verifying the voter code.';
         setApiError(msg);
@@ -135,15 +106,36 @@ export const VoterVerificationPage: React.FC = () => {
     }
   };
 
+  const handleSubmitPayment = async () => {
+    const voterId = voter?.id || voter?.voter_db_id;
+    if (!voterId) return;
+    if (isPaid) return;
+
+    setIsSubmittingPayment(true);
+    setPaymentError(null);
+    setPaymentSuccess(null);
+
+    try {
+      await documentService.submitVoterPayment(voterId);
+      setIsPaid(true);
+      setPaymentSuccess('Submitted successfully (PAID).');
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Payment submission failed.';
+      setPaymentError(msg);
+      if (msg.toLowerCase().includes('already paid') || msg.toLowerCase().includes('already completed')) {
+        setIsPaid(true);
+      }
+    } finally {
+      setIsSubmittingPayment(false);
+    }
+  };
+
   const handleBackToEntry = () => {
     setVoter(null);
     setCode('');
-    setRemarks('');
     setIsPaid(false);
     setPaymentSuccess(null);
     setPaymentError(null);
-    setRemarksSuccess(null);
-    setRemarksError(null);
     setValidationError(null);
     setNotFoundError(null);
     setApiError(null);
@@ -156,108 +148,6 @@ export const VoterVerificationPage: React.FC = () => {
       setTimeout(() => setCopied(false), 2000);
     }
   };
-
-  const handleCopyTxId = () => {
-    if (transactionId) {
-      navigator.clipboard.writeText(transactionId);
-      setCopiedTx(true);
-      setTimeout(() => setCopiedTx(false), 2000);
-    }
-  };
-
-  const handleRefreshBalance = async () => {
-    setIsRefreshingBalance(true);
-    try {
-      const res = await documentService.getWalletBalance();
-      if (res && typeof res.available_balance === 'number') {
-        setWalletBalance(res.available_balance);
-      }
-    } catch (err) {
-      console.error('Failed to refresh wallet balance', err);
-    } finally {
-      setIsRefreshingBalance(false);
-    }
-  };
-
-  const handleSubmitPayment = async () => {
-    const voterId = voter?.id || voter?.voter_db_id;
-    if (!voterId) {
-      setPaymentError('Unable to identify voter record ID.');
-      return;
-    }
-
-    if (isPaid) {
-      setPaymentError('Payment has already been completed for this voter.');
-      return;
-    }
-
-    if (walletBalance < applicableAmount) {
-      setPaymentError(
-        `Insufficient Wallet Balance. Your balance is ₹${walletBalance.toFixed(2)}, but ₹${applicableAmount.toFixed(2)} is required.`
-      );
-      return;
-    }
-
-    setIsSubmittingPayment(true);
-    setPaymentError(null);
-    setPaymentSuccess(null);
-
-    try {
-      const idempotencyKey = `VAL-${voterId}-${Date.now()}`;
-      const res = await documentService.submitVoterPayment(voterId, remarks, idempotencyKey);
-
-      setIsPaid(true);
-      setPaymentSuccess(
-        `Payment of ₹${(res.deducted_amount || applicableAmount).toFixed(2)} completed successfully!`
-      );
-      if (res.updated_balance !== undefined) {
-        setWalletBalance(res.updated_balance);
-      } else if (res.wallet_balance !== undefined) {
-        setWalletBalance(res.wallet_balance);
-      } else {
-        setWalletBalance((prev) => Math.max(0, prev - applicableAmount));
-      }
-      if (res.transaction_id) setTransactionId(res.transaction_id);
-      if (res.transaction_date) setTransactionDate(res.transaction_date);
-      if (res.deducted_amount) setDeductedAmount(res.deducted_amount);
-      if (user?.full_name || user?.username) {
-        setPaidBy(user.full_name || user.username);
-      }
-    } catch (err: any) {
-      const msg =
-        err.response?.data?.detail || err.message || 'Payment processing failed. Please try again.';
-      setPaymentError(msg);
-      // If error indicates already paid, re-fetch status
-      if (msg.toLowerCase().includes('already paid') || msg.toLowerCase().includes('already completed')) {
-        setIsPaid(true);
-      }
-    } finally {
-      setIsSubmittingPayment(false);
-    }
-  };
-
-  const handleUpdateRemarks = async () => {
-    const voterId = voter?.id || voter?.voter_db_id;
-    if (!voterId) return;
-
-    setIsUpdatingRemarks(true);
-    setRemarksSuccess(null);
-    setRemarksError(null);
-
-    try {
-      await documentService.updateVoterRemarks(voterId, remarks);
-      setRemarksSuccess('Remarks updated successfully.');
-      setTimeout(() => setRemarksSuccess(null), 3000);
-    } catch (err: any) {
-      const msg = err.response?.data?.detail || err.message || 'Failed to update remarks.';
-      setRemarksError(msg);
-    } finally {
-      setIsUpdatingRemarks(false);
-    }
-  };
-
-  const hasSufficientBalance = walletBalance >= applicableAmount;
-  const projectedBalance = walletBalance - applicableAmount;
 
   return (
     <div className="w-full max-w-4xl mx-auto py-4 sm:py-8 px-2 sm:px-4">
@@ -298,7 +188,7 @@ export const VoterVerificationPage: React.FC = () => {
           </div>
 
           {/* Details Body */}
-          <div className="p-6 sm:p-8 space-y-8">
+          <div className="p-6 sm:p-8 space-y-6">
             <div className="flex flex-col md:flex-row gap-6 lg:gap-8 items-start">
               {/* Photograph Card */}
               <div className="w-full md:w-48 shrink-0 flex flex-col items-center">
@@ -427,284 +317,59 @@ export const VoterVerificationPage: React.FC = () => {
               </div>
             </div>
 
-            {/* ========================================================= */}
-            {/* Payment & Wallet Deduction Section                        */}
-            {/* ========================================================= */}
-            <div className="border-t border-slate-200 dark:border-slate-800 pt-6 space-y-6">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                  <Receipt className="w-5 h-5 text-brand-600" />
-                  <span>Payment & Wallet Deduction (చెల్లింపు స్థితి)</span>
-                </h3>
+            {/* Submission Feedback Banners */}
+            {paymentError && (
+              <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 text-xs font-semibold flex items-center justify-center gap-2 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                <span>{paymentError}</span>
+              </div>
+            )}
 
-                {/* Live Payment Status Pill */}
-                {isPaid ? (
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold tracking-wide uppercase bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 shadow-xs">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                    PAID · చెల్లింపు పూర్తయింది
-                  </span>
+            {paymentSuccess && (
+              <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-semibold flex items-center justify-center gap-2 animate-in fade-in">
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>{paymentSuccess}</span>
+              </div>
+            )}
+
+            {/* Actions: Back Button and ONLY Submit Button */}
+            <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={handleBackToEntry}
+                className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-2xl text-sm font-bold transition-all"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back / Enter Another Code</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSubmitPayment}
+                disabled={isSubmittingPayment || isPaid}
+                className={`w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3 rounded-2xl text-sm font-bold shadow-lg transition-all transform ${
+                  isPaid
+                    ? 'bg-emerald-600 text-white cursor-default opacity-90'
+                    : 'bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white shadow-brand-500/25 hover:-translate-y-0.5 cursor-pointer disabled:cursor-not-allowed'
+                }`}
+              >
+                {isSubmittingPayment ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Submitting...</span>
+                  </>
+                ) : isPaid ? (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Submitted (PAID)</span>
+                  </>
                 ) : (
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold tracking-wide uppercase bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-300 dark:border-amber-800 shadow-xs">
-                    <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                    PAYMENT PENDING · చెల్లింపు పెండింగ్
-                  </span>
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>Submit</span>
+                  </>
                 )}
-              </div>
-
-              {/* Already Paid Banner */}
-              {isPaid && (
-                <div className="p-4 sm:p-5 rounded-2xl bg-emerald-50/90 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/80 space-y-3">
-                  <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300">
-                    <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                    <span className="text-sm font-bold">
-                      ఈ ఓటరుకు పేమెంట్ ఇప్పటికే విజయవంతంగా పూర్తయింది (Payment Successfully Completed)
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-                    <div className="p-2.5 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-emerald-200/60 dark:border-emerald-900/40">
-                      <span className="text-slate-500 dark:text-slate-400 block text-[10px] uppercase font-semibold">Deducted Amount</span>
-                      <span className="font-bold text-emerald-700 dark:text-emerald-400 text-sm">
-                        ₹{deductedAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-
-                    <div className="p-2.5 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-emerald-200/60 dark:border-emerald-900/40">
-                      <span className="text-slate-500 dark:text-slate-400 block text-[10px] uppercase font-semibold">Transaction ID</span>
-                      <div className="flex items-center justify-between gap-1 mt-0.5">
-                        <span className="font-mono font-bold text-slate-800 dark:text-slate-200 truncate">
-                          {transactionId || 'N/A'}
-                        </span>
-                        {transactionId && (
-                          <button
-                            type="button"
-                            onClick={handleCopyTxId}
-                            className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-600 dark:text-slate-300"
-                            title="Copy Transaction ID"
-                          >
-                            {copiedTx ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="p-2.5 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-emerald-200/60 dark:border-emerald-900/40">
-                      <span className="text-slate-500 dark:text-slate-400 block text-[10px] uppercase font-semibold">Date & Time</span>
-                      <span className="font-semibold text-slate-800 dark:text-slate-200 mt-0.5 block truncate">
-                        {transactionDate ? new Date(transactionDate).toLocaleString('en-IN') : 'Just now'}
-                      </span>
-                    </div>
-
-                    <div className="p-2.5 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-emerald-200/60 dark:border-emerald-900/40">
-                      <span className="text-slate-500 dark:text-slate-400 block text-[10px] uppercase font-semibold">Processed By</span>
-                      <span className="font-semibold text-slate-800 dark:text-slate-200 mt-0.5 block truncate">
-                        {paidBy || user?.full_name || user?.username || 'Field User'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Wallet & Amount Overview Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {/* Current Balance */}
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 relative overflow-hidden">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                      <Wallet className="w-3.5 h-3.5 text-brand-600" /> Current Wallet Balance
-                    </span>
-                    <button
-                      type="button"
-                      onClick={handleRefreshBalance}
-                      disabled={isRefreshingBalance}
-                      className="p-1 text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 rounded-lg transition-colors"
-                      title="Refresh Balance"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingBalance ? 'animate-spin' : ''}`} />
-                    </button>
-                  </div>
-                  <p className="mt-2 text-xl font-bold font-mono text-slate-900 dark:text-slate-100">
-                    ₹{walletBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                  </p>
-                  <span className="text-[10px] text-slate-400 mt-0.5 block font-telugu">
-                    ప్రస్తుత వాలెట్ బ్యాలెన్స్
-                  </span>
-                </div>
-
-                {/* Applicable Amount */}
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                    <CreditCard className="w-3.5 h-3.5 text-indigo-600" /> Applicable Amount
-                  </span>
-                  <p className="mt-2 text-xl font-bold font-mono text-indigo-700 dark:text-indigo-400">
-                    ₹{applicableAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                  </p>
-                  <span className="text-[10px] text-slate-400 mt-0.5 block font-telugu">
-                    చెల్లించాల్సిన మొత్తం
-                  </span>
-                </div>
-
-                {/* Projected Balance After Payment */}
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                    <TrendingDown className="w-3.5 h-3.5 text-brand-600" /> Balance After Payment
-                  </span>
-                  {isPaid ? (
-                    <>
-                      <p className="mt-2 text-xl font-bold font-mono text-slate-900 dark:text-slate-100">
-                        ₹{walletBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </p>
-                      <span className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-0.5 block font-medium">
-                        Deduction Already Completed
-                      </span>
-                    </>
-                  ) : hasSufficientBalance ? (
-                    <>
-                      <p className="mt-2 text-xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
-                        ₹{projectedBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </p>
-                      <span className="text-[10px] text-slate-400 mt-0.5 block font-telugu">
-                        చెల్లింపు తర్వాత బ్యాలెన్స్
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <p className="mt-2 text-lg font-bold font-mono text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
-                        <AlertTriangle className="w-4 h-4 shrink-0" />
-                        Insufficient
-                      </p>
-                      <span className="text-[10px] text-rose-600 dark:text-rose-400 mt-0.5 block font-medium">
-                        Short by ₹{(applicableAmount - walletBalance).toFixed(2)}
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* Remarks Text Box */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label htmlFor="voter-remarks" className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                    <span>Remarks (వ్యాఖ్యలు)</span>
-                    <span className="text-slate-400 font-normal text-[11px]">— Optional</span>
-                  </label>
-                  {isPaid && (
-                    <button
-                      type="button"
-                      onClick={handleUpdateRemarks}
-                      disabled={isUpdatingRemarks}
-                      className="text-xs font-semibold text-brand-600 hover:text-brand-700 dark:text-brand-400 flex items-center gap-1 disabled:opacity-50 transition-colors"
-                    >
-                      {isUpdatingRemarks ? (
-                        <RefreshCw className="w-3 h-3 animate-spin" />
-                      ) : (
-                        <Save className="w-3 h-3" />
-                      )}
-                      <span>Update Remarks</span>
-                    </button>
-                  )}
-                </div>
-
-                <textarea
-                  id="voter-remarks"
-                  rows={3}
-                  value={remarks}
-                  onChange={(e) => setRemarks(e.target.value)}
-                  placeholder="Enter remarks or additional information..."
-                  className="w-full px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all resize-none"
-                />
-
-                {remarksSuccess && (
-                  <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5" /> {remarksSuccess}
-                  </p>
-                )}
-                {remarksError && (
-                  <p className="text-xs font-medium text-rose-600 dark:text-rose-400 flex items-center gap-1">
-                    <AlertCircle className="w-3.5 h-3.5" /> {remarksError}
-                  </p>
-                )}
-              </div>
-
-              {/* Insufficient Balance Warning Banner */}
-              {!isPaid && !hasSufficientBalance && (
-                <div className="p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-rose-800 dark:text-rose-300 flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 shrink-0 text-rose-600 dark:text-rose-400 mt-0.5" />
-                  <div className="text-xs space-y-1">
-                    <p className="font-bold text-sm">
-                      Insufficient Wallet Balance (వాలెట్‌లో తగినంత బ్యాలెన్స్ లేదు)
-                    </p>
-                    <p>
-                      Your current balance is ₹{walletBalance.toFixed(2)}, but ₹{applicableAmount.toFixed(2)} is required to complete this voter submission.
-                    </p>
-                    <p className="text-rose-700 dark:text-rose-400 font-medium">
-                      Please contact your Administrator or Super Admin to allocate additional funds to your wallet.
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Payment Success Banner */}
-              {paymentSuccess && (
-                <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 flex items-center gap-3">
-                  <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                  <div className="text-xs">
-                    <p className="font-bold text-sm">Payment Successful!</p>
-                    <p>{paymentSuccess}</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Payment Error Banner */}
-              {paymentError && (
-                <div className="p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 flex items-center gap-3">
-                  <AlertCircle className="w-5 h-5 shrink-0 text-rose-600 dark:text-rose-400" />
-                  <div className="text-xs">
-                    <p className="font-bold text-sm">Payment Error</p>
-                    <p>{paymentError}</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Submission Action Buttons */}
-              <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={handleBackToEntry}
-                  className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-2xl text-sm font-bold transition-all"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  <span>Back / Enter Another Code</span>
-                </button>
-
-                {/* Submit Payment Button */}
-                {!isPaid ? (
-                  <button
-                    type="button"
-                    onClick={handleSubmitPayment}
-                    disabled={isSubmittingPayment || !hasSufficientBalance}
-                    className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:hover:bg-brand-600 text-white rounded-2xl text-sm font-bold shadow-lg shadow-brand-500/25 transition-all transform hover:-translate-y-0.5 disabled:transform-none cursor-pointer disabled:cursor-not-allowed"
-                  >
-                    {isSubmittingPayment ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Processing Payment (₹{applicableAmount.toFixed(2)})...</span>
-                      </>
-                    ) : (
-                      <>
-                        <CreditCard className="w-4 h-4" />
-                        <span>Submit Payment (₹{applicableAmount.toFixed(2)})</span>
-                      </>
-                    )}
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4" />
-                      Payment Completed (చెల్లింపు పూర్తయింది)
-                    </span>
-                  </div>
-                )}
-              </div>
+              </button>
             </div>
           </div>
         </div>

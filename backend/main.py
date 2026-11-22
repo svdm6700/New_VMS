@@ -2058,20 +2058,50 @@ class GenerateVoterListPdfRequest(BaseModel):
     search_unique_id: Optional[str] = None
     gender: Optional[str] = None
 
+def _normalize_ward_token(w: str) -> str:
+    if not w:
+        return ""
+    s = str(w).strip().lower()
+    s = s.replace("ward", "").replace("w-", "").strip(" -_#")
+    digits = "".join(ch for ch in s if ch.isdigit())
+    return digits if digits else s
+
+def _ward_matches(assigned_ward: str, voter_ward: str) -> bool:
+    if not assigned_ward or not voter_ward:
+        return False
+    a_raw = str(assigned_ward).strip().lower()
+    v_raw = str(voter_ward).strip().lower()
+    if a_raw in ("all", "*"):
+        return True
+    if a_raw == v_raw:
+        return True
+    if a_raw in v_raw or v_raw in a_raw:
+        return True
+    a_norm = _normalize_ward_token(assigned_ward)
+    v_norm = _normalize_ward_token(voter_ward)
+    if a_norm and v_norm and a_norm == v_norm:
+        return True
+    return False
+
 def _check_voter_geographic_scope(voter: VoterRecordModel, current_user: Optional[UserModel], db: Session):
     """
-    Enforces strict RBAC geographic scoping:
-    - Super Admin: global access
+    Mandatory Ward Assignment and Geographic Scope Validation:
+    - Super Admin: global access across all Constituencies and Wards
     - Admin: voter's document constituency must match admin's assigned constituencies
-    - User: voter's document constituency and ward must match user's assigned scope
+    - User:
+      1. Retrieve User's assigned Constituencies and Wards from DB.
+      2. If User has no assigned Wards / no active assignments, block payment submission / access.
+      3. Identify voter's actual Constituency and Ward from DB.
+      4. Verify voter's Ward is assigned to logged-in User.
+      5. If not assigned, block transaction with 'This voter does not belong to your assigned Ward.'
     Raises HTTP 403 Forbidden on violation.
     """
     if not current_user or is_super_admin(current_user):
         return
 
     doc = voter.document if hasattr(voter, "document") and voter.document else db.query(DocumentModel).filter(DocumentModel.id == voter.document_id).first()
-    voter_constituency = (doc.constituency if doc else "") or ""
-    voter_ward = (doc.ward_number if doc else "") or ""
+    voter_constituency = ((doc.constituency if doc else "") or "").strip()
+    voter_ward = ((doc.ward_number if doc else "") or "").strip()
 
     if is_admin(current_user):
         admin_assignments = db.query(UserGeographicAssignmentModel).filter(
@@ -2082,39 +2112,62 @@ def _check_voter_geographic_scope(voter: VoterRecordModel, current_user: Optiona
             raise HTTPException(status_code=403, detail="Access denied: No active geographic assignments found for Admin.")
         allowed = any(
             a.constituency and (
-                a.constituency.strip().lower() in voter_constituency.strip().lower() or
-                voter_constituency.strip().lower() in a.constituency.strip().lower()
+                a.constituency.strip().lower() in voter_constituency.lower() or
+                voter_constituency.lower() in a.constituency.strip().lower()
             )
             for a in admin_assignments
         )
         if not allowed:
             raise HTTPException(status_code=403, detail="Access denied: Voter is outside your authorized geographic scope.")
     else:
-        # Standard User / Operator / Viewer
+        # Standard User / Field Operator
         user_assignments = db.query(UserGeographicAssignmentModel).filter(
             UserGeographicAssignmentModel.user_id == current_user.id,
             UserGeographicAssignmentModel.status == "ACTIVE"
         ).all()
         if not user_assignments:
-            raise HTTPException(status_code=403, detail="Access denied: No active geographic assignments found for User.")
-        allowed = False
-        for a in user_assignments:
-            if not a.constituency:
-                continue
-            c_match = (
-                a.constituency.strip().lower() in voter_constituency.strip().lower() or
-                voter_constituency.strip().lower() in a.constituency.strip().lower()
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: No active geographic assignments found for User. Payment submission is blocked."
             )
-            if c_match:
-                ward_list = a.to_dict().get("wards", [])
-                if not ward_list or "ALL" in [w.upper() for w in ward_list]:
-                    allowed = True
+
+        # Check if the user has any assigned wards across their assignments
+        all_assigned_wards = []
+        for a in user_assignments:
+            parsed_wards = a.to_dict().get("wards", [])
+            for w in parsed_wards:
+                if str(w).strip():
+                    all_assigned_wards.append(str(w).strip())
+
+        if not all_assigned_wards:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: No assigned Wards found for User. Payment submission is blocked."
+            )
+
+        # Verify that the voter's Ward is assigned to the logged-in User
+        is_ward_assigned = False
+        v_const_lower = voter_constituency.lower()
+
+        for a in user_assignments:
+            a_const_lower = (a.constituency or "").strip().lower()
+            if not a_const_lower:
+                continue
+            # Check constituency match
+            if a_const_lower in v_const_lower or v_const_lower in a_const_lower:
+                assigned_wards = a.to_dict().get("wards", [])
+                for aw in assigned_wards:
+                    if _ward_matches(aw, voter_ward):
+                        is_ward_assigned = True
+                        break
+                if is_ward_assigned:
                     break
-                if any(w.strip().lower() in voter_ward.strip().lower() or voter_ward.strip().lower() in w.strip().lower() for w in ward_list if w.strip()):
-                    allowed = True
-                    break
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Access denied: Voter is outside your assigned geographic scope.")
+
+        if not is_ward_assigned:
+            raise HTTPException(
+                status_code=403,
+                detail="This voter does not belong to your assigned Ward."
+            )
 
 @app.get("/api/voters/{voter_id}/pdf", tags=["Voter PDF Generation"])
 def generate_individual_voter_pdf(
@@ -2587,24 +2640,46 @@ def get_voter_payment_status(
 
 @app.post("/api/voters/{voter_id}/submit-payment", tags=["Voter Payment"])
 def submit_voter_payment(
-    voter_id: int,
+    voter_id: str,
     req: Optional[SubmitVoterPaymentRequest] = None,
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Deduct configured amount from User's wallet and record payment for voter.
-    Uses database row-level locking for concurrency protection.
-    Enforces geographic scope and prevents duplicate deductions.
+    Mandatory Ward Assignment and Wallet Validation Payment Submission:
+    1. Retrieve the logged-in User from the authenticated JWT.
+    2. Retrieve the voter record using ID or 5-character Voter Unique Code.
+    3. Identify voter's actual Constituency and Ward from database.
+    4. Revalidate User's assigned Constituencies and Wards from database at submission time.
+    5. If User has no assigned Wards, block payment submission.
+    6. If voter's Ward is not assigned to User, block with 'This voter does not belong to your assigned Ward.'
+    7. If voter is already PAID, return existing transaction details with zero deduction.
+    8. Check User's wallet balance using database transaction & row-level locking.
+    9. If balance is insufficient, return 'Insufficient Wallet Balance.'
+    10. If sufficient, deduct configured amount and record ledger entries atomically.
     """
     remarks_val = (req.remarks.strip() if req and req.remarks and req.remarks.strip() else None)
     idempotency_key_val = (req.idempotency_key.strip() if req and req.idempotency_key and req.idempotency_key.strip() else None)
 
-    voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == voter_id).first()
+    voter = None
+    try:
+        vid_int = int(voter_id)
+        voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == vid_int).first()
+    except (ValueError, TypeError):
+        pass
+
+    if not voter:
+        voter = db.query(VoterRecordModel).filter(
+            or_(
+                VoterRecordModel.unique_key == str(voter_id).strip().upper(),
+                VoterRecordModel.voter_id == str(voter_id).strip()
+            )
+        ).first()
+
     if not voter:
         raise HTTPException(status_code=404, detail="Voter not found.")
 
-    # Enforce geographic scope restrictions
+    # Revalidate the assignment and Ward relationship at submission time
     _check_voter_geographic_scope(voter, current_user, db)
 
     is_admin = is_admin_or_super(current_user)
@@ -2670,10 +2745,9 @@ def submit_voter_payment(
         ).with_for_update().first()
 
     if not wallet or wallet.available_balance < deduct_amount:
-        avail = float(wallet.available_balance) if wallet else 0.0
         raise HTTPException(
             status_code=400,
-            detail="Insufficient Wallet Balance"
+            detail="Insufficient Wallet Balance."
         )
 
     # Perform atomic deduction
