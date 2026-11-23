@@ -431,7 +431,7 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
             page_no = p_idx + 1
             text = page.get_text("text") or ""
             
-            is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య", "Sl.No", "S.No", "EPIC", "Voter", "voter"])
+            is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య"])
             if is_voter_page:
                 cells = detect_voter_cells(page)
                 if cells:
@@ -529,14 +529,9 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
                     fields.insert(0, {"field_name": "వరుస సంఖ్య", "value": first_num})
                     
             if fields:
-                s_val = next((f["value"] for f in fields if any(k in f["field_name"] for k in ["సంఖ్య", "సం", "Sl", "S.No"])), str(rec_counter))
-                v_val = next((f["value"] for f in fields if any(k in f["field_name"] for k in ["కార్డు", "గుర్తింపు", "ఐడి", "EPIC", "ID"])), "Not Available")
                 records.append({
                     "record_id": rec_counter,
                     "page": page_no,
-                    "serial_no": s_val,
-                    "voter_id": v_val,
-                    "image_matching_status": "MISSING",
                     "title": f"రికార్డు {rec_counter} (పేజీ {page_no})",
                     "fields": fields
                 })
@@ -553,9 +548,6 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
                 records.append({
                     "record_id": rec_counter,
                     "page": page_no,
-                    "serial_no": str(rec_counter),
-                    "voter_id": "Not Available",
-                    "image_matching_status": "MISSING",
                     "title": f"టేబుల్ రికార్డు {rec_counter} (పేజీ {page_no})",
                     "fields": fields
                 })
@@ -607,7 +599,7 @@ def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None, d
                 method = "Embedded PDF text"
                 text_pages += 1
 
-                is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "Sl.No", "S.No", "EPIC", "Voter", "voter"])
+                is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము"])
 
                 if not is_voter_page:
                     if pdf_plumber_doc is None:

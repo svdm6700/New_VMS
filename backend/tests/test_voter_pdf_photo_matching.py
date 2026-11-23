@@ -192,11 +192,11 @@ def test_multi_page_pdf_processing():
     # Create 2 pages
     p1 = doc.new_page(width=595, height=842)
     p1.draw_rect(fitz.Rect(32, 38, 206, 119), color=(0, 0, 0))
-    p1.insert_text(fitz.Point(36, 50), "Sl.No: 1\nSJC0000001\nName: Voter 1\nAge: 30\nGender: Female")
+    p1.insert_text(fitz.Point(36, 50), "వ.సం: 1\nSJC0000001\nపేరు: ఓటరు ఒకటి\nభర్త: భర్త ఒకటి\nఇంటి సంఖ్య: 1-1\nవయస్సు: 30  లింగం: స్త్రీ")
 
     p2 = doc.new_page(width=595, height=842)
     p2.draw_rect(fitz.Rect(32, 38, 206, 119), color=(0, 0, 0))
-    p2.insert_text(fitz.Point(36, 50), "Sl.No: 2\nSJC0000002\nName: Voter 2\nAge: 35\nGender: Male")
+    p2.insert_text(fitz.Point(36, 50), "వ.సం: 2\nSJC0000002\nపేరు: ఓటరు రెండు\nతండ్రి: తండ్రి రెండు\nఇంటి సంఖ్య: 1-2\nవయస్సు: 35  లింగం: పురుషుడు")
 
     pdf_bytes = doc.tobytes()
     doc.close()
