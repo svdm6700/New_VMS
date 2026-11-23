@@ -1,4 +1,4 @@
-import api, { API_BASE_URL } from './api';
+import api, { uploadApi, API_BASE_URL } from './api';
 import {
   DocumentItem,
   DocumentResult,
@@ -129,11 +129,12 @@ export const documentService = {
     formData.append('area', options?.area || '');
     formData.append('ward_number', options?.ward_number || '');
 
-    const res = await api.post('/api/documents/upload', formData, {
+    const res = await uploadApi.post('/api/documents/upload', formData, {
+      timeout: 600000, // 10 minutes — handles large PDFs with 2,500+ voters
       params: {
         ollama_url: options?.ollamaUrl || 'http://localhost:11434',
         model_name: options?.modelName || 'llama3.2',
-        use_ai: options?.useAi ?? true,
+        use_ai: options?.useAi ?? false,
       },
       onUploadProgress: (progressEvent) => {
         if (progressEvent.total && options?.onUploadProgress) {
@@ -273,12 +274,36 @@ export const documentService = {
   },
 
   // -------------------------------------------------------------
-  // Voter Payment & Wallet Deduction APIs
+  // Asynchronous Page-Wise Progress & Retry APIs
   // -------------------------------------------------------------
-  async getWalletBalance(): Promise<{ available_balance: number; currency: string; status: string }> {
-    const res = await api.get('/api/wallet/balance');
+  async getDocumentProgress(docId: string): Promise<any> {
+    const res = await api.get(`/api/documents/${docId}/progress`);
     return res.data;
   },
+
+  async getDocumentPages(docId: string): Promise<any> {
+    const res = await api.get(`/api/documents/${docId}/pages`);
+    return res.data;
+  },
+
+  async getPageDetails(docId: string, pageNo: number): Promise<any> {
+    const res = await api.get(`/api/documents/${docId}/pages/${pageNo}`);
+    return res.data;
+  },
+
+  async retryPage(docId: string, pageNo: number): Promise<any> {
+    const res = await api.post(`/api/documents/${docId}/pages/${pageNo}/retry`);
+    return res.data;
+  },
+
+  async retryFailedPages(docId: string): Promise<any> {
+    const res = await api.post(`/api/documents/${docId}/retry-failed`);
+    return res.data;
+  },
+
+  // -------------------------------------------------------------
+  // Voter Payment & Verification APIs
+  // -------------------------------------------------------------
 
   async getVoterPaymentStatus(voterId: number): Promise<any> {
     const res = await api.get(`/api/voters/${voterId}/payment-status`);

@@ -18,8 +18,6 @@ import { DocumentsPage } from './pages/Documents';
 import { ExtractedData } from './pages/ExtractedData';
 import { VoterEntriesPage } from './pages/VoterEntriesPage';
 import { PaymentsDashboard } from './pages/PaymentsDashboard';
-import { WalletManagement } from './pages/WalletManagement';
-import { MyWalletPage } from './pages/MyWalletPage';
 import { Settings } from './pages/Settings';
 import { ConstituencyManagement } from './pages/ConstituencyManagement';
 import { UserAssignmentsPage } from './pages/UserAssignmentsPage';
@@ -39,11 +37,6 @@ const RootRedirect: React.FC = () => {
     return <Navigate to="/login" replace />;
   }
   return <Navigate to={isUser ? '/voter-verification' : '/admin/dashboard'} replace />;
-};
-
-const WalletRedirect: React.FC = () => {
-  const { isUser } = useAuth();
-  return <Navigate to={isUser ? '/voter-verification' : '/admin/wallets'} replace />;
 };
 
 function AppLayout() {
@@ -199,27 +192,6 @@ function AppLayout() {
               element={
                 <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
                   <PaymentsDashboard />
-                </ProtectedRoute>
-              }
-            />
-
-            {/* Wallet Management */}
-            <Route
-              path="/admin/wallets"
-              element={
-                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
-                  <WalletManagement />
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/wallets" element={<Navigate to="/admin/wallets" replace />} />
-            <Route path="/wallet" element={<WalletRedirect />} />
-
-            <Route
-              path="/my-wallet"
-              element={
-                <ProtectedRoute allowedRoles={['super_admin', 'admin']}>
-                  <MyWalletPage />
                 </ProtectedRoute>
               }
             />

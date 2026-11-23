@@ -7,7 +7,6 @@ import {
   TableProperties,
   CreditCard,
   Receipt,
-  Wallet,
   Settings,
   X,
   User,
@@ -141,11 +140,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
                 <span>Geographic Management</span>
               </NavLink>
 
-              <NavLink to="/admin/wallets" onClick={onClose} className={navLinkClass}>
-                <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                <span>Wallet Management</span>
-              </NavLink>
-
               <NavLink to="/settings" onClick={onClose} className={navLinkClass}>
                 <Settings className="w-4 h-4 shrink-0 text-slate-500 dark:text-slate-400" />
                 <span>Settings</span>
@@ -197,11 +191,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
                 <Building2 className="w-4 h-4 shrink-0 text-cyan-600 dark:text-cyan-400" />
                 <span>Geographic Assignments</span>
               </NavLink>
-
-              <NavLink to="/admin/wallets" onClick={onClose} className={navLinkClass}>
-                <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                <span>Wallet Management</span>
-              </NavLink>
             </>
           )}
 
@@ -233,16 +222,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ isOpen, onClose }) => {
               <NavLink to="/voter-entries" onClick={onClose} className={navLinkClass}>
                 <CreditCard className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                 <span>Voter Amount Assignment</span>
-              </NavLink>
-
-              <NavLink to="/my-wallet" onClick={onClose} className={navLinkClass}>
-                <Wallet className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                <span>My Wallet</span>
-              </NavLink>
-
-              <NavLink to="/my-wallet?tab=transactions" onClick={onClose} className={navLinkClass}>
-                <Receipt className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                <span>My Transactions</span>
               </NavLink>
 
               <NavLink to="/profile" onClick={onClose} className={navLinkClass}>

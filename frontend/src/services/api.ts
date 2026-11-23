@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { logger } from './loggingService';
 
 const rawBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 export const API_BASE_URL = rawBase.replace(/\/api\/?$/, '');
@@ -32,8 +33,26 @@ const api = axios.create({
   timeout: defaultTimeout,
 });
 
+// Longer timeout instance for file uploads (2,500+ voters / large PDFs)
+export const uploadApi = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 600000, // 10 minutes
+});
+
 // Request interceptor: Automatically attach JWT Bearer token if present
 api.interceptors.request.use(
+  (config) => {
+    const token = getStoredToken();
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// Same auth interceptor for the upload instance
+uploadApi.interceptors.request.use(
   (config) => {
     const token = getStoredToken();
     if (token) {
@@ -77,7 +96,7 @@ api.interceptors.response.use(
         }
       }
       message = error.response.data?.detail || 'Authentication required or session expired.';
-    } else if (error.response.data?.detail) {
+    } else if (error.response?.data?.detail) {
       if (typeof error.response.data.detail === 'string') {
         message = error.response.data.detail;
       } else if (Array.isArray(error.response.data.detail)) {
@@ -87,6 +106,15 @@ api.interceptors.response.use(
       }
     } else if (error.message) {
       message = error.message;
+    }
+
+    if (!error.config?.url?.includes('/api/logs/frontend')) {
+      logger.error(`API Error: ${error.config?.method?.toUpperCase()} ${error.config?.url} [${error.response?.status || 'Network Error'}] - ${message}`, {
+        url: error.config?.url,
+        method: error.config?.method,
+        status: error.response?.status,
+        error_message: message,
+      });
     }
 
     return Promise.reject(new Error(message));

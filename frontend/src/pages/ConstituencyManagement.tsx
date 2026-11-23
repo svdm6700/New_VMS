@@ -27,7 +27,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { geoService, District, Constituency, Ward } from '../services/geoService';
 import { authService } from '../services/authService';
-import { GeographicAssignment } from '../types/wallet';
+import { GeographicAssignment } from '../types/geo';
 import { User } from '../types/auth';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
 

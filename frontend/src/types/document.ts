@@ -99,6 +99,30 @@ export interface VoterRecord {
   ward_number?: string;
 }
 
+export interface DocumentPageItem {
+  id: number;
+  document_id: string;
+  page_number: number;
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'retry';
+  retry_count: number;
+  max_retries: number;
+  voter_count: number;
+  error_details?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface DocumentProgress {
+  document_id: string;
+  status: string;
+  total_pages: number;
+  processed_pages: number;
+  failed_pages: number;
+  total_voters: number;
+  percent_complete: number;
+  pages: DocumentPageItem[];
+}
+
 export interface VerifiedVoter {
   status: string;
   id?: number;

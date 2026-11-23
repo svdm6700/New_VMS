@@ -8,7 +8,7 @@ import csv
 from datetime import datetime, timezone, timedelta, date
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Dict
 from io import BytesIO, StringIO
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -45,38 +45,46 @@ except ImportError:
 
 try:
     from backend.database import (
-        init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel,
+        init_db, get_db, SessionLocal, DocumentModel, DocumentPageModel, VoterRecordModel,
         UserModel, RoleModel, VoterEntryModel, PermissionModel,
         RolePermissionModel, UserRoleModel, AuditLogModel,
         PaymentModel, PaymentAuditLogModel,
-        WalletModel, WalletTransactionModel, UserGeographicAssignmentModel,
+        UserGeographicAssignmentModel,
         VoterAmountAllocationModel, DistrictModel, ConstituencyModel, WardModel
+    )
+    from backend.logger import (
+        backend_logger, system_logger, errors_logger, doc_proc_logger,
+        bulk_proc_logger, pdf_export_logger, frontend_logger, log_event
     )
     from backend.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
     from backend.auth_deps import (
         get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission,
         is_super_admin, is_admin, is_admin_or_super, require_super_admin, require_roles
     )
-    from backend.processor import process_pdf
+    from backend.processor import process_pdf, extract_single_page_records, extract_single_page_data
     from backend.excel import create_excel
     from backend.seed import seed_database
     from backend.pdf_generator import generate_voters_a4_pdf
     from backend.photo_service import get_voter_photo_path
 except ImportError:
     from database import (
-        init_db, get_db, SessionLocal, DocumentModel, VoterRecordModel,
+        init_db, get_db, SessionLocal, DocumentModel, DocumentPageModel, VoterRecordModel,
         UserModel, RoleModel, VoterEntryModel, PermissionModel,
         RolePermissionModel, UserRoleModel, AuditLogModel,
         PaymentModel, PaymentAuditLogModel,
-        WalletModel, WalletTransactionModel, UserGeographicAssignmentModel,
+        UserGeographicAssignmentModel,
         VoterAmountAllocationModel, DistrictModel, ConstituencyModel, WardModel
+    )
+    from logger import (
+        backend_logger, system_logger, errors_logger, doc_proc_logger,
+        bulk_proc_logger, pdf_export_logger, frontend_logger, log_event
     )
     from security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
     from auth_deps import (
         get_current_user, get_optional_current_user, require_admin, get_user_permissions, require_permission,
         is_super_admin, is_admin, is_admin_or_super, require_super_admin, require_roles
     )
-    from processor import process_pdf
+    from processor import process_pdf, extract_single_page_records, extract_single_page_data
     from excel import create_excel
     from seed import seed_database
     from pdf_generator import generate_voters_a4_pdf
@@ -313,147 +321,523 @@ class ExportBody(BaseModel):
     result: Optional[dict[str, Any]] = None
 
 # -------------------------------------------------------------
-# Background Task Pipeline
+# Background Task Pipeline & Page-Wise Extraction
 # -------------------------------------------------------------
 def run_background_extraction(
     doc_id: str,
     file_path: Path,
     filename: str,
-    ollama_url: str,
-    model_name: str,
-    use_ai: bool
+    ollama_url: Optional[str] = None,
+    model_name: Optional[str] = None,
+    use_ai: bool = False,
+    target_pages: Optional[List[int]] = None
 ):
     db: Session = SessionLocal()
+    doc_fitz = None
     try:
-        with open(file_path, "rb") as f:
-            data = f.read()
+        log_event(doc_proc_logger, "INFO", f"Starting extraction for document {doc_id} ({filename})", document_id=doc_id)
+        file_path_obj = Path(file_path)
+        if not file_path_obj.exists():
+            raise FileNotFoundError(f"File {file_path} not found on disk")
 
-        result = process_pdf(data, filename, ollama_url, model_name, use_ai, doc_id=doc_id)
-        result["id"] = doc_id
-
-        res_path = RESULTS_DIR / f"{doc_id}.json"
-        with open(res_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False)
+        doc_fitz = fitz.open(str(file_path_obj))
+        total_pages = len(doc_fitz)
 
         doc_obj = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
-        if doc_obj:
-            doc_obj.total_pages = result.get("metadata", {}).get("page_count", 0)
+        if not doc_obj:
+            log_event(errors_logger, "ERROR", f"Document {doc_id} not found in database", document_id=doc_id)
+            return
 
-            # Delete previous records if reprocessed
-            db.query(VoterRecordModel).filter(VoterRecordModel.document_id == doc_id).delete()
+        doc_obj.total_pages = total_pages
+        doc_obj.processing_status = "processing"
+        doc_obj.processing_error = None
 
-            # Duplicate Voter Detection & Permanent 5-Character Unique Key Assignment
-            from backend.unique_key import generate_bulk_unique_keys
-            records_list = result.get("records", [])
-
-            # Check if any voter in this batch already exists in PostgreSQL
-            existing_epics = {}
-            for r in records_list:
-                f_dict = {f.get("field_name", "").strip(): str(f.get("value", "")).strip() for f in r.get("fields", [])}
-                vid = f_dict.get("ఓటరు ఐడి కార్డు నెం.") or f_dict.get("గుర్తింపు కార్డు నెం.") or r.get("voter_id")
-                if vid and vid != "Not Available":
-                    existing_epics[vid] = None
-
-            if existing_epics:
-                found_voters = db.query(VoterRecordModel.voter_id, VoterRecordModel.unique_key).filter(
-                    VoterRecordModel.voter_id.in_(list(existing_epics.keys())),
-                    VoterRecordModel.unique_key.isnot(None),
-                    VoterRecordModel.unique_key != ""
-                ).all()
-                for vid, ukey in found_voters:
-                    if vid and ukey:
-                        existing_epics[vid] = ukey
-
-            fresh_keys = generate_bulk_unique_keys(db, len(records_list))
-            fresh_key_idx = 0
-
-            voter_objs = []
-            for r in records_list:
-                fields = {f.get("field_name", "").strip(): str(f.get("value", "")).strip() for f in r.get("fields", [])}
-
-                sno = r.get("serial_no") or fields.get("గ్రా.పం.ఓ.జా.వ.సం.") or fields.get("వరుస సంఖ్య") or str(r.get("record_id", ""))
-                roll = r.get("electoral_roll_no") or fields.get("అ.ఓ.జా.వ.సం.") or "Not Available"
-                name = r.get("voter_name") or fields.get("ఓటరు పేరు") or fields.get("పేరు") or "Not Available"
-
-                rel_type = r.get("relation_type") or "Not Available"
-                rel_name = r.get("relation_name") or "Not Available"
-                if rel_type == "Not Available" or not rel_type:
-                    if "తండ్రి పేరు" in fields:
-                        rel_type = "తండ్రి"
-                        rel_name = fields["తండ్రి పేరు"]
-                    elif "భర్త పేరు" in fields:
-                        rel_type = "భర్త"
-                        rel_name = fields["భర్త పేరు"]
-                    elif "సంబంధం" in fields or "సంబంధిత వ్యక్తి పేరు" in fields:
-                        rel_type = fields.get("సంబంధం", "Not Available")
-                        rel_name = fields.get("సంబంధిత వ్యక్తి పేరు", "Not Available")
-
-                age = r.get("age") or fields.get("వయస్సు", "Not Available")
-                gender = r.get("gender") or fields.get("లింగము", "Not Available")
-                house = r.get("house_no") or fields.get("ఇంటి సంఖ్య", "Not Available")
-                voter_id = r.get("voter_id") or fields.get("ఓటరు ఐడి కార్డు నెం.") or fields.get("గుర్తింపు కార్డు నెం.") or "Not Available"
-                source_page = r.get("page", 1)
-
-                # Spatial image attributes
-                block_bbox = r.get("block_bbox")
-                photo_bbox = r.get("photo_bbox")
-                photo_path = r.get("photo_path")
-                image_matching_status = r.get("image_matching_status", "MISSING")
-
-                # Determine permanent unique key: reuse if confirmed duplicate, else use fresh key
-                assigned_key = None
-                if voter_id and voter_id != "Not Available" and existing_epics.get(voter_id):
-                    assigned_key = existing_epics[voter_id]
-                else:
-                    assigned_key = fresh_keys[fresh_key_idx]
-                    fresh_key_idx += 1
-
-                # If photo is extracted and assigned_key is available, link unique_key photo
-                if assigned_key and photo_path and os.path.exists(photo_path):
-                    try:
-                        ukey_photo = PHOTOS_DIR / f"{assigned_key}.jpg"
-                        if not ukey_photo.exists():
-                            shutil.copyfile(photo_path, ukey_photo)
-                    except Exception:
-                        pass
-
-                voter_objs.append(VoterRecordModel(
+        # Ensure DocumentPageModel entries exist for all pages
+        existing_pages = {p.page_number: p for p in db.query(DocumentPageModel).filter(DocumentPageModel.document_id == doc_id).all()}
+        for p_num in range(1, total_pages + 1):
+            if p_num not in existing_pages:
+                new_page = DocumentPageModel(
                     document_id=doc_id,
-                    serial_no=sno or "Not Available",
-                    electoral_roll_no=roll or "Not Available",
-                    voter_name=name or "Not Available",
-                    relation_type=rel_type or "Not Available",
-                    relation_name=rel_name or "Not Available",
-                    age=age or "Not Available",
-                    gender=gender or "Not Available",
-                    house_no=house or "Not Available",
-                    voter_id=voter_id or "Not Available",
-                    unique_key=assigned_key,
-                    source_page=source_page,
-                    block_bbox=block_bbox,
-                    photo_bbox=photo_bbox,
-                    photo_path=photo_path,
-                    image_matching_status=image_matching_status,
-                    ocr_confidence=None,
-                    created_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc),
-                ))
+                    page_number=p_num,
+                    status="pending",
+                    voter_count=0,
+                    retry_count=0
+                )
+                db.add(new_page)
+                existing_pages[p_num] = new_page
 
-            if voter_objs:
-                db.bulk_save_objects(voter_objs)
+        pages_to_extract = target_pages if target_pages else list(range(1, total_pages + 1))
+        for p_num in pages_to_extract:
+            if p_num in existing_pages:
+                existing_pages[p_num].status = "pending"
+                existing_pages[p_num].error_details = None
 
-            doc_obj.processing_status = "completed"
+        db.commit()
+
+        from backend.unique_key import generate_bulk_unique_keys
+
+        # Process pages independently and save results immediately per page
+        for page_no in pages_to_extract:
+            page_rec = existing_pages.get(page_no)
+            if not page_rec:
+                page_rec = db.query(DocumentPageModel).filter(
+                    DocumentPageModel.document_id == doc_id,
+                    DocumentPageModel.page_number == page_no
+                ).first()
+
+            if page_rec:
+                page_rec.status = "processing"
+                page_rec.started_at = datetime.now(timezone.utc)
+                db.commit()
+
+            try:
+                page_data = extract_single_page_data(
+                    doc_fitz, page_no, doc_id,
+                    ollama_url=ollama_url, model_name=model_name, use_ai=use_ai
+                )
+
+                if page_data.get("status") == "completed":
+                    rec_list = page_data.get("records", [])
+
+                    # Idempotency: remove previous records for this specific page
+                    db.query(VoterRecordModel).filter(
+                        VoterRecordModel.document_id == doc_id,
+                        VoterRecordModel.source_page == page_no
+                    ).delete()
+
+                    # Duplicate Voter Detection & Unique Key Assignment
+                    existing_epics = {}
+                    for r in rec_list:
+                        f_dict = {f.get("field_name", "").strip(): str(f.get("value", "")).strip() for f in r.get("fields", [])}
+                        vid = f_dict.get("ఓటరు ఐడి కార్డు నెం.") or f_dict.get("గుర్తింపు కార్డు నెం.") or r.get("voter_id")
+                        if vid and vid != "Not Available":
+                            existing_epics[vid] = None
+
+                    if existing_epics:
+                        epic_keys = list(existing_epics.keys())
+                        for c_start in range(0, len(epic_keys), 500):
+                            sub_chunk = epic_keys[c_start:c_start + 500]
+                            found_voters = db.query(VoterRecordModel.voter_id, VoterRecordModel.unique_key).filter(
+                                VoterRecordModel.voter_id.in_(sub_chunk),
+                                VoterRecordModel.unique_key.isnot(None),
+                                VoterRecordModel.unique_key != ""
+                            ).all()
+                            for f_vid, f_ukey in found_voters:
+                                if f_vid and f_ukey:
+                                    existing_epics[f_vid] = f_ukey
+
+                    fresh_keys = generate_bulk_unique_keys(db, len(rec_list))
+                    fresh_key_idx = 0
+
+                    voter_objs = []
+                    for r in rec_list:
+                        fields = {f.get("field_name", "").strip(): str(f.get("value", "")).strip() for f in r.get("fields", [])}
+
+                        sno = r.get("serial_no") or fields.get("గ్రా.పం.ఓ.జా.వ.సం.") or fields.get("వరుస సంఖ్య") or str(r.get("record_id", ""))
+                        roll = r.get("electoral_roll_no") or fields.get("అ.ఓ.జా.వ.సం.") or "Not Available"
+                        name = r.get("voter_name") or fields.get("ఓటరు పేరు") or fields.get("పేరు") or "Not Available"
+
+                        rel_type = r.get("relation_type") or "Not Available"
+                        rel_name = r.get("relation_name") or "Not Available"
+                        if rel_type == "Not Available" or not rel_type:
+                            if "తండ్రి పేరు" in fields:
+                                rel_type = "తండ్రి"
+                                rel_name = fields["తండ్రి పేరు"]
+                            elif "భర్త పేరు" in fields:
+                                rel_type = "భర్త"
+                                rel_name = fields["భర్త పేరు"]
+                            elif "సంబంధం" in fields or "సంబంధిత వ్యక్తి పేరు" in fields:
+                                rel_type = fields.get("సంబంధం", "Not Available")
+                                rel_name = fields.get("సంబంధిత వ్యక్తి పేరు", "Not Available")
+
+                        age = r.get("age") or fields.get("వయస్సు", "Not Available")
+                        gender = r.get("gender") or fields.get("లింగము", "Not Available")
+                        house = r.get("house_no") or fields.get("ఇంటి సంఖ్య", "Not Available")
+                        voter_id = r.get("voter_id") or fields.get("ఓటరు ఐడి కార్డు నెం.") or fields.get("గుర్తింపు కార్డు నెం.") or "Not Available"
+
+                        block_bbox = r.get("block_bbox")
+                        photo_bbox = r.get("photo_bbox")
+                        photo_path = r.get("photo_path")
+                        image_matching_status = r.get("image_matching_status", "MISSING")
+
+                        assigned_key = None
+                        if voter_id and voter_id != "Not Available" and existing_epics.get(voter_id):
+                            assigned_key = existing_epics[voter_id]
+                        else:
+                            assigned_key = fresh_keys[fresh_key_idx]
+                            fresh_key_idx += 1
+
+                        if assigned_key and photo_path and os.path.exists(photo_path):
+                            try:
+                                ukey_photo = PHOTOS_DIR / f"{assigned_key}.jpg"
+                                if not ukey_photo.exists():
+                                    shutil.copyfile(photo_path, ukey_photo)
+                            except Exception:
+                                pass
+
+                        voter_objs.append(VoterRecordModel(
+                            document_id=doc_id,
+                            serial_no=sno or "Not Available",
+                            electoral_roll_no=roll or "Not Available",
+                            voter_name=name or "Not Available",
+                            relation_type=rel_type or "Not Available",
+                            relation_name=rel_name or "Not Available",
+                            age=age or "Not Available",
+                            gender=gender or "Not Available",
+                            house_no=house or "Not Available",
+                            voter_id=voter_id or "Not Available",
+                            unique_key=assigned_key,
+                            source_page=page_no,
+                            block_bbox=block_bbox,
+                            photo_bbox=photo_bbox,
+                            photo_path=photo_path,
+                            image_matching_status=image_matching_status,
+                            ocr_confidence=None,
+                            created_at=datetime.now(timezone.utc),
+                            updated_at=datetime.now(timezone.utc),
+                        ))
+
+                    chunk_size = 500
+                    for c_i in range(0, len(voter_objs), chunk_size):
+                        db.bulk_save_objects(voter_objs[c_i:c_i + chunk_size])
+                        db.flush()
+
+                    if page_rec:
+                        page_rec.status = "completed"
+                        page_rec.voter_count = len(rec_list)
+                        page_rec.raw_text = page_data.get("text", "")
+                        page_rec.structured_json = rec_list
+                        page_rec.error_details = None
+                        page_rec.completed_at = datetime.now(timezone.utc)
+
+                    doc_obj.processed_pages = db.query(DocumentPageModel).filter(
+                        DocumentPageModel.document_id == doc_id,
+                        DocumentPageModel.status == "completed"
+                    ).count()
+                    doc_obj.failed_pages = db.query(DocumentPageModel).filter(
+                        DocumentPageModel.document_id == doc_id,
+                        DocumentPageModel.status == "failed"
+                    ).count()
+                    doc_obj.total_voters = db.query(func.count(VoterRecordModel.id)).filter(
+                        VoterRecordModel.document_id == doc_id
+                    ).scalar() or 0
+
+                    db.commit()
+                    log_event(doc_proc_logger, "INFO", f"Doc {doc_id} Page {page_no}/{total_pages} extracted: {len(rec_list)} voters", document_id=doc_id, page=page_no, voters=len(rec_list))
+
+                else:
+                    err_msg = page_data.get("error", "Page extraction returned failed status")
+                    if page_rec:
+                        page_rec.status = "failed"
+                        page_rec.error_details = err_msg
+                        page_rec.completed_at = datetime.now(timezone.utc)
+
+                    doc_obj.failed_pages = db.query(DocumentPageModel).filter(
+                        DocumentPageModel.document_id == doc_id,
+                        DocumentPageModel.status == "failed"
+                    ).count()
+                    db.commit()
+                    log_event(doc_proc_logger, "WARNING", f"Doc {doc_id} Page {page_no}/{total_pages} failed: {err_msg}", document_id=doc_id, page=page_no, error=err_msg)
+
+            except Exception as page_exc:
+                db.rollback()
+                if page_rec:
+                    page_rec.status = "failed"
+                    page_rec.error_details = str(page_exc)
+                    page_rec.completed_at = datetime.now(timezone.utc)
+                doc_obj.failed_pages = db.query(DocumentPageModel).filter(
+                    DocumentPageModel.document_id == doc_id,
+                    DocumentPageModel.status == "failed"
+                ).count()
+                db.commit()
+                log_event(errors_logger, "ERROR", f"Doc {doc_id} Page {page_no} unexpected error: {str(page_exc)}", document_id=doc_id, page=page_no, exc_info=True)
+
+        # Check overall document completion
+        pending_count = db.query(DocumentPageModel).filter(
+            DocumentPageModel.document_id == doc_id,
+            DocumentPageModel.status.in_(["pending", "processing", "retry"])
+        ).count()
+
+        if pending_count == 0:
+            failed_count = db.query(DocumentPageModel).filter(
+                DocumentPageModel.document_id == doc_id,
+                DocumentPageModel.status == "failed"
+            ).count()
+            completed_count = db.query(DocumentPageModel).filter(
+                DocumentPageModel.document_id == doc_id,
+                DocumentPageModel.status == "completed"
+            ).count()
+
+            if failed_count == 0 and completed_count > 0:
+                doc_obj.processing_status = "completed"
+            elif completed_count > 0:
+                doc_obj.processing_status = "completed_with_errors"
+            else:
+                doc_obj.processing_status = "failed"
+
             doc_obj.processed_at = datetime.now(timezone.utc)
             db.commit()
+
+        # Build full JSON result file for backward-compatibility
+        all_completed_pages = db.query(DocumentPageModel).filter(
+            DocumentPageModel.document_id == doc_id,
+            DocumentPageModel.status == "completed"
+        ).order_by(DocumentPageModel.page_number).all()
+
+        combined_records = []
+        combined_pages = []
+        for cp in all_completed_pages:
+            combined_pages.append({
+                "page": cp.page_number,
+                "text": cp.raw_text or "",
+                "method": "Embedded PDF text / OCR"
+            })
+            if cp.structured_json and isinstance(cp.structured_json, list):
+                combined_records.extend(cp.structured_json)
+
+        full_result = {
+            "id": doc_id,
+            "metadata": {
+                "filename": filename,
+                "page_count": total_pages,
+                "records_count": len(combined_records)
+            },
+            "pages": combined_pages,
+            "records": combined_records
+        }
+        res_path = RESULTS_DIR / f"{doc_id}.json"
+        with open(res_path, "w", encoding="utf-8", buffering=512 * 1024) as f:
+            json.dump(full_result, f, ensure_ascii=False)
+
+        log_event(doc_proc_logger, "INFO", f"Extraction finished for document {doc_id}: status={doc_obj.processing_status}, total_voters={doc_obj.total_voters}", document_id=doc_id)
+
     except Exception as exc:
         db.rollback()
+        log_event(errors_logger, "ERROR", f"Doc {doc_id} extraction pipeline failed: {str(exc)}", document_id=doc_id, exc_info=True)
         doc_obj = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
         if doc_obj:
             doc_obj.processing_status = "failed"
             doc_obj.processing_error = str(exc)
             db.commit()
     finally:
+        if doc_fitz:
+            try:
+                doc_fitz.close()
+            except Exception:
+                pass
         db.close()
+
+
+# -------------------------------------------------------------
+# Page-Wise Document Extraction, Progress & Retry Endpoints
+# -------------------------------------------------------------
+@app.get("/api/documents/{doc_id}/progress", tags=["Document Management"])
+def get_document_progress(
+    doc_id: str,
+    db: Session = Depends(get_db)
+):
+    """Real-time document and page-level extraction progress."""
+    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    pages = db.query(DocumentPageModel).filter(
+        DocumentPageModel.document_id == doc_id
+    ).order_by(DocumentPageModel.page_number).all()
+
+    total_pg = doc.total_pages or len(pages) or 1
+    completed_pg = sum(1 for p in pages if p.status == "completed")
+    failed_pg = sum(1 for p in pages if p.status == "failed")
+    processing_pg = sum(1 for p in pages if p.status == "processing")
+    pending_pg = sum(1 for p in pages if p.status in ("pending", "retry"))
+
+    pct = round((completed_pg / total_pg) * 100, 1) if total_pg > 0 else 0.0
+
+    return {
+        "document_id": doc.id,
+        "filename": doc.original_filename,
+        "status": doc.processing_status,
+        "processing_status": doc.processing_status,
+        "total_pages": doc.total_pages or len(pages),
+        "processed_pages": completed_pg,
+        "failed_pages": failed_pg,
+        "processing_pages": processing_pg,
+        "pending_pages": pending_pg,
+        "total_voters": doc.total_voters or 0,
+        "progress_percentage": min(100.0, pct),
+        "pages": [p.to_dict() for p in pages]
+    }
+
+@app.get("/api/documents/{doc_id}/pages", tags=["Document Management"])
+def get_document_pages(
+    doc_id: str,
+    db: Session = Depends(get_db)
+):
+    """List all extracted pages and their status for a document."""
+    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    pages = db.query(DocumentPageModel).filter(
+        DocumentPageModel.document_id == doc_id
+    ).order_by(DocumentPageModel.page_number).all()
+
+    return {
+        "document_id": doc_id,
+        "total_pages": len(pages),
+        "pages": [p.to_dict() for p in pages]
+    }
+
+@app.get("/api/documents/{doc_id}/pages/{page_no}", tags=["Document Management"])
+def get_document_page_details(
+    doc_id: str,
+    page_no: int,
+    db: Session = Depends(get_db)
+):
+    """Retrieve full text and structured JSON for a single page."""
+    page = db.query(DocumentPageModel).filter(
+        DocumentPageModel.document_id == doc_id,
+        DocumentPageModel.page_number == page_no
+    ).first()
+    if not page:
+        raise HTTPException(status_code=404, detail=f"Page {page_no} not found for document {doc_id}.")
+
+    return page.to_dict()
+
+@app.post("/api/documents/{doc_id}/pages/{page_no}/retry", tags=["Document Management"])
+def retry_document_page(
+    doc_id: str,
+    page_no: int,
+    background_tasks: BackgroundTasks,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Retry extraction for an individual page."""
+    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    page = db.query(DocumentPageModel).filter(
+        DocumentPageModel.document_id == doc_id,
+        DocumentPageModel.page_number == page_no
+    ).first()
+    if not page:
+        raise HTTPException(status_code=404, detail=f"Page {page_no} not found for document {doc_id}.")
+
+    pdf_file = resolve_pdf_path(doc.stored_file_path, doc_id)
+    if not pdf_file or not pdf_file.exists():
+        raise HTTPException(status_code=400, detail="Physical PDF file not found on disk.")
+
+    page.status = "retry"
+    page.retry_count = (page.retry_count or 0) + 1
+    page.error_details = None
+    doc.processing_status = "processing"
+    db.commit()
+
+    log_event(doc_proc_logger, "INFO", f"Triggered retry for doc {doc_id} page {page_no} by user {current_user.username}", document_id=doc_id, page=page_no, user_id=current_user.id)
+
+    background_tasks.add_task(
+        run_background_extraction,
+        doc_id=doc_id,
+        file_path=pdf_file,
+        filename=doc.original_filename,
+        ollama_url=settings.OLLAMA_BASE_URL,
+        model_name=settings.OLLAMA_MODEL,
+        use_ai=settings.OLLAMA_ENABLED,
+        target_pages=[page_no]
+    )
+
+    return {
+        "status": "ok",
+        "message": f"Retry started for page {page_no} of document {doc_id}.",
+        "page_number": page_no,
+        "retry_count": page.retry_count
+    }
+
+@app.post("/api/documents/{doc_id}/retry-failed", tags=["Document Management"])
+def retry_failed_pages(
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Retry extraction for all failed pages in a document."""
+    doc = db.query(DocumentModel).filter(DocumentModel.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    failed_pages = db.query(DocumentPageModel).filter(
+        DocumentPageModel.document_id == doc_id,
+        DocumentPageModel.status == "failed"
+    ).order_by(DocumentPageModel.page_number).all()
+
+    if not failed_pages:
+        return {"status": "ok", "message": "No failed pages found to retry.", "retried_count": 0}
+
+    pdf_file = resolve_pdf_path(doc.stored_file_path, doc_id)
+    if not pdf_file or not pdf_file.exists():
+        raise HTTPException(status_code=400, detail="Physical PDF file not found on disk.")
+
+    target_page_numbers = []
+    for fp in failed_pages:
+        fp.status = "retry"
+        fp.retry_count = (fp.retry_count or 0) + 1
+        fp.error_details = None
+        target_page_numbers.append(fp.page_number)
+
+    doc.processing_status = "processing"
+    db.commit()
+
+    log_event(doc_proc_logger, "INFO", f"Triggered retry for doc {doc_id} failed pages {target_page_numbers} by user {current_user.username}", document_id=doc_id, retried_pages=target_page_numbers, user_id=current_user.id)
+
+    background_tasks.add_task(
+        run_background_extraction,
+        doc_id=doc_id,
+        file_path=pdf_file,
+        filename=doc.original_filename,
+        ollama_url=settings.OLLAMA_BASE_URL,
+        model_name=settings.OLLAMA_MODEL,
+        use_ai=settings.OLLAMA_ENABLED,
+        target_pages=target_page_numbers
+    )
+
+    return {
+        "status": "ok",
+        "message": f"Retry started for {len(target_page_numbers)} failed pages.",
+        "retried_count": len(target_page_numbers),
+        "pages": target_page_numbers
+    }
+
+
+# -------------------------------------------------------------
+# Frontend Logging Collector Endpoint
+# -------------------------------------------------------------
+@app.post("/api/logs/frontend", tags=["Logging"])
+def receive_frontend_logs(payload: Dict[str, Any]):
+    """
+    Ingest frontend client logs securely into storage/logs/frontend.log and errors.log.
+    Redacts sensitive keys automatically.
+    """
+    try:
+        entries = payload.get("logs", [])
+        if not entries and "message" in payload:
+            entries = [payload]
+
+        count = 0
+        for entry in entries:
+            lvl = str(entry.get("level", "INFO")).upper()
+            msg = str(entry.get("message", "Frontend event"))
+            ctx = entry.get("context", {})
+
+            log_event(frontend_logger, lvl, f"[CLIENT] {msg}", **ctx)
+            if lvl in ("ERROR", "CRITICAL"):
+                log_event(errors_logger, lvl, f"[FRONTEND ERROR] {msg}", **ctx)
+            count += 1
+
+        return {"status": "ok", "received": count}
+    except Exception as exc:
+        log_event(errors_logger, "ERROR", f"Failed to ingest frontend logs: {str(exc)}", exc_info=True)
+        return {"status": "error", "message": "Failed to store logs"}
 
 # -------------------------------------------------------------
 # 1. Health & System Configuration Status Endpoints
@@ -990,13 +1374,22 @@ async def upload_document(
 
     user_id = current_user.id if current_user else None
 
+    # Calculate total pages immediately so UI and database have accurate page counts from upload start
+    initial_page_count = 0
+    try:
+        import fitz
+        with fitz.open(str(pdf_path)) as _pdoc:
+            initial_page_count = len(_pdoc)
+    except Exception:
+        initial_page_count = 0
+
     # 3. Save document & location metadata in database
     doc_entry = DocumentModel(
         id=doc_id,
         original_filename=file.filename,
         stored_file_path=str(pdf_path),
         file_size=total_size,
-        total_pages=0,
+        total_pages=initial_page_count,
         processing_status="processing",
         processing_error=None,
         uploaded_at=datetime.now(timezone.utc),
@@ -1029,6 +1422,7 @@ async def upload_document(
         "document_id": doc_id,
         "filename": file.filename,
         "file_size": total_size,
+        "total_pages": initial_page_count,
         "district": clean_district,
         "constituency": clean_constituency,
         "area": clean_area,
@@ -1036,7 +1430,7 @@ async def upload_document(
         "status": "processing",
         "processing_status": "processing",
         "uploaded_by": user_id,
-        "message": "File and location details uploaded successfully. Automatic extraction started."
+        "message": f"File uploaded successfully ({initial_page_count} pages detected). Extracting voter records in background — this may take several minutes for large files."
     }
 
 # -------------------------------------------------------------
@@ -1269,7 +1663,7 @@ def get_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    if current_user and current_user.role.lower() != "admin" and doc.uploaded_by != current_user.id:
+    if current_user and not is_admin_or_super(current_user) and doc.uploaded_by != current_user.id:
         raise HTTPException(status_code=403, detail="You do not have permission to view this document.")
 
     res_path = resolve_result_path(doc_id)
@@ -2442,42 +2836,8 @@ def generate_filtered_voter_list_pdf(
     )
 
 # -------------------------------------------------------------
-# 14b. Single-Screen Voter Verification, Wallet & Payment APIs
+# 14b. Single-Screen Voter Verification & Payment APIs (Wallet Removed)
 # -------------------------------------------------------------
-def get_or_create_admin_wallet(db: Session, admin_id: int) -> WalletModel:
-    w = db.query(WalletModel).filter(WalletModel.owner_type == "ADMIN", WalletModel.owner_id == admin_id).first()
-    if not w:
-        w = WalletModel(
-            owner_type="ADMIN",
-            owner_id=admin_id,
-            available_balance=Decimal("0.00"),
-            currency="INR",
-            status="ACTIVE",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db.add(w)
-        db.commit()
-        db.refresh(w)
-    return w
-
-def get_or_create_user_wallet(db: Session, user_id: int) -> WalletModel:
-    w = db.query(WalletModel).filter(WalletModel.owner_type == "USER", WalletModel.owner_id == user_id).first()
-    if not w:
-        w = WalletModel(
-            owner_type="USER",
-            owner_id=user_id,
-            available_balance=Decimal("0.00"),
-            currency="INR",
-            status="ACTIVE",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db.add(w)
-        db.commit()
-        db.refresh(w)
-    return w
-
 class SubmitVoterPaymentRequest(BaseModel):
     remarks: Optional[str] = None
     idempotency_key: Optional[str] = None
@@ -2495,23 +2855,25 @@ def verify_voter_code(
     Verify voter by exact 5-character alphanumeric unique code.
     Requires JWT authentication.
     Enforces RBAC geographic scope.
-    Returns matching voter details, wallet balance, and payment status.
+    Returns matching voter details and payment status.
     """
     code = (unique_code or "").strip().upper()
     if len(code) != 5 or not code.isalnum():
         raise HTTPException(
             status_code=400,
-            detail="Invalid Voter Code format. Code must be exactly 5 alphanumeric characters."
+            detail="Invalid Unique Voter Code. Code must be exactly 5 alphanumeric characters."
         )
 
     voter = db.query(VoterRecordModel).filter(VoterRecordModel.unique_key == code).first()
     if not voter:
-        raise HTTPException(status_code=404, detail="Invalid Voter Code")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No voter record found matching Unique Voter Code '{code}'."
+        )
 
-    # Enforce geographic scope restrictions
     _check_voter_geographic_scope(voter, current_user, db)
 
-    doc = voter.document if hasattr(voter, "document") and voter.document else db.query(DocumentModel).filter(DocumentModel.id == voter.document_id).first()
+    doc = voter.document
 
     photo_path = get_voter_photo_path(
         unique_key=voter.unique_key,
@@ -2527,14 +2889,12 @@ def verify_voter_code(
     photo_base64 = None
     if photo_path and os.path.exists(photo_path):
         try:
-            import base64
             with open(photo_path, "rb") as pf:
                 b64 = base64.b64encode(pf.read()).decode("utf-8")
                 photo_base64 = f"data:image/jpeg;base64,{b64}"
         except Exception:
             photo_base64 = None
 
-    # Check existing payment status & remarks
     existing_alloc = db.query(VoterAmountAllocationModel).filter(
         VoterAmountAllocationModel.voter_id == voter.id,
         VoterAmountAllocationModel.status == "ACTIVE"
@@ -2547,14 +2907,10 @@ def verify_voter_code(
 
     is_paid = bool(existing_alloc or existing_payment)
     alloc_amount = float(existing_alloc.amount if existing_alloc else (existing_payment.amount if existing_payment else 0.0))
-    tx_id = (existing_alloc.wallet_transaction.transaction_id if existing_alloc and existing_alloc.wallet_transaction else (existing_alloc.allocation_reference if existing_alloc else (existing_payment.transaction_id if existing_payment else None)))
+    tx_id = (existing_alloc.allocation_reference if existing_alloc else (existing_payment.transaction_id if existing_payment else None))
     tx_date = (existing_alloc.allocation_date.isoformat() if existing_alloc and existing_alloc.allocation_date else (existing_payment.created_at.isoformat() if existing_payment and existing_payment.created_at else None))
     existing_remarks = (existing_alloc.remarks if existing_alloc and existing_alloc.remarks else (existing_payment.remarks if existing_payment and existing_payment.remarks else ""))
     paid_by = (existing_alloc.user.full_name or existing_alloc.user.username if existing_alloc and existing_alloc.user else (existing_payment.creator.full_name or existing_payment.creator.username if existing_payment and existing_payment.creator else None))
-
-    is_admin = is_admin_or_super(current_user)
-    user_wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
-    user_balance = float(user_wallet.available_balance or 0.0)
     applicable_amt = float(getattr(settings, "DEFAULT_VOTER_PAYMENT_AMOUNT", 500.0))
 
     return {
@@ -2590,7 +2946,6 @@ def verify_voter_code(
         "is_paid": is_paid,
         "payment_status": "PAID" if is_paid else "UNPAID",
         "applicable_amount": applicable_amt,
-        "user_wallet_balance": user_balance,
         "amount": alloc_amount if is_paid else applicable_amt,
         "deducted_amount": alloc_amount if is_paid else None,
         "transaction_id": tx_id,
@@ -2637,7 +2992,7 @@ def get_voter_photo_endpoint(
     return FileResponse(photo_path, media_type="image/jpeg")
 
 class PhotoVerificationUpdate(BaseModel):
-    status: str # MATCHED, NEEDS_VERIFICATION, MISSING, EXTRACTION_FAILED
+    status: str
     notes: Optional[str] = None
 
 @app.put("/api/voters/{voter_id}/verify-photo", tags=["Voter Verification"])
@@ -2667,25 +3022,6 @@ def verify_voter_photo_status(
         "voter": voter.to_dict()
     }
 
-@app.get("/api/wallet/balance", tags=["Wallet"])
-def get_logged_in_wallet_balance(
-    current_user: UserModel = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Fetch logged-in user's current wallet balance and status."""
-    is_admin = is_admin_or_super(current_user)
-    wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
-    return {
-        "status": "ok",
-        "user_id": current_user.id,
-        "username": current_user.username,
-        "wallet_id": wallet.id,
-        "owner_type": wallet.owner_type,
-        "available_balance": float(wallet.available_balance or 0.0),
-        "currency": wallet.currency or "INR",
-        "wallet_status": wallet.status or "ACTIVE"
-    }
-
 @app.get("/api/voters/{voter_id}/payment-status", tags=["Voter Payment"])
 def get_voter_payment_status(
     voter_id: int,
@@ -2709,12 +3045,9 @@ def get_voter_payment_status(
         PaymentModel.payment_status == "Paid"
     ).first()
 
-    is_admin = is_admin_or_super(current_user)
-    wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
-
     is_paid = bool(existing_alloc or existing_payment)
     amount = float(existing_alloc.amount if existing_alloc else (existing_payment.amount if existing_payment else 0.0))
-    tx_id = (existing_alloc.wallet_transaction.transaction_id if existing_alloc and existing_alloc.wallet_transaction else (existing_alloc.allocation_reference if existing_alloc else (existing_payment.transaction_id if existing_payment else None)))
+    tx_id = (existing_alloc.allocation_reference if existing_alloc else (existing_payment.transaction_id if existing_payment else None))
     tx_date = (existing_alloc.allocation_date.isoformat() if existing_alloc and existing_alloc.allocation_date else (existing_payment.created_at.isoformat() if existing_payment and existing_payment.created_at else None))
     remarks = (existing_alloc.remarks if existing_alloc and existing_alloc.remarks else (existing_payment.remarks if existing_payment and existing_payment.remarks else ""))
     paid_by = (existing_alloc.user.full_name or existing_alloc.user.username if existing_alloc and existing_alloc.user else (existing_payment.creator.full_name or existing_payment.creator.username if existing_payment and existing_payment.creator else None))
@@ -2726,7 +3059,6 @@ def get_voter_payment_status(
         "is_paid": is_paid,
         "payment_status": "PAID" if is_paid else "UNPAID",
         "applicable_amount": applicable_amt,
-        "user_wallet_balance": float(wallet.available_balance or 0.0),
         "amount": amount if is_paid else applicable_amt,
         "deducted_amount": amount if is_paid else None,
         "transaction_id": tx_id,
@@ -2743,17 +3075,15 @@ def submit_voter_payment(
     db: Session = Depends(get_db)
 ):
     """
-    Mandatory Ward Assignment and Wallet Validation Payment Submission:
+    Mandatory Ward Assignment and Payment Submission:
     1. Retrieve the logged-in User from the authenticated JWT.
     2. Retrieve the voter record using ID or 5-character Voter Unique Code.
     3. Identify voter's actual Constituency and Ward from database.
     4. Revalidate User's assigned Constituencies and Wards from database at submission time.
     5. If User has no assigned Wards, block payment submission.
     6. If voter's Ward is not assigned to User, block with 'This voter does not belong to your assigned Ward.'
-    7. If voter is already PAID, return existing transaction details with zero deduction.
-    8. Check User's wallet balance using database transaction & row-level locking.
-    9. If balance is insufficient, return 'Insufficient Wallet Balance.'
-    10. If sufficient, deduct configured amount and record ledger entries atomically.
+    7. If voter is already PAID, return existing transaction details.
+    8. Record payment and allocation ledger entries atomically.
     """
     remarks_val = (req.remarks.strip() if req and req.remarks and req.remarks.strip() else None)
     idempotency_key_val = (req.idempotency_key.strip() if req and req.idempotency_key and req.idempotency_key.strip() else None)
@@ -2776,12 +3106,10 @@ def submit_voter_payment(
     if not voter:
         raise HTTPException(status_code=404, detail="Voter not found.")
 
-    # Revalidate the assignment and Ward relationship at submission time
     _check_voter_geographic_scope(voter, current_user, db)
 
     is_admin = is_admin_or_super(current_user)
 
-    # Check if voter has already been paid with row-level lock
     existing_alloc = db.query(VoterAmountAllocationModel).filter(
         VoterAmountAllocationModel.voter_id == voter.id,
         VoterAmountAllocationModel.status == "ACTIVE"
@@ -2792,12 +3120,9 @@ def submit_voter_payment(
         PaymentModel.payment_status == "Paid"
     ).first()
 
-    active_wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
-
     if existing_alloc or existing_payment:
-        # Already paid! Do not deduct again, do not create duplicate transactions.
         paid_amount = float(existing_alloc.amount if existing_alloc else existing_payment.amount)
-        tx_id = (existing_alloc.wallet_transaction.transaction_id if existing_alloc and existing_alloc.wallet_transaction else (existing_alloc.allocation_reference if existing_alloc else existing_payment.transaction_id))
+        tx_id = (existing_alloc.allocation_reference if existing_alloc else existing_payment.transaction_id)
         tx_date = (existing_alloc.allocation_date.isoformat() if existing_alloc and existing_alloc.allocation_date else existing_payment.created_at.isoformat())
         existing_rem = (existing_alloc.remarks if existing_alloc and existing_alloc.remarks else (existing_payment.remarks if existing_payment and existing_payment.remarks else remarks_val))
 
@@ -2814,74 +3139,22 @@ def submit_voter_payment(
             "deducted_amount": paid_amount,
             "transaction_id": tx_id,
             "transaction_date": tx_date,
-            "wallet_balance": float(active_wallet.available_balance or 0.0),
-            "updated_balance": float(active_wallet.available_balance or 0.0),
             "remarks": existing_rem
         }
 
-    # Calculate applicable amount strictly on backend (never trust frontend amount)
     deduct_amount = Decimal(str(getattr(settings, "DEFAULT_VOTER_PAYMENT_AMOUNT", 500.0)))
 
-    # Atomic row-level lock on the User's (or Admin's) wallet
-    if is_admin:
-        wallet = db.query(WalletModel).filter(
-            WalletModel.owner_type == "ADMIN",
-            WalletModel.owner_id == current_user.id
-        ).with_for_update().first()
-        if not wallet or wallet.available_balance < deduct_amount:
-            user_w = db.query(WalletModel).filter(
-                WalletModel.owner_type == "USER",
-                WalletModel.owner_id == current_user.id
-            ).with_for_update().first()
-            if user_w and user_w.available_balance >= deduct_amount:
-                wallet = user_w
-    else:
-        wallet = db.query(WalletModel).filter(
-            WalletModel.owner_type == "USER",
-            WalletModel.owner_id == current_user.id
-        ).with_for_update().first()
-
-    if not wallet or wallet.available_balance < deduct_amount:
-        raise HTTPException(
-            status_code=400,
-            detail="Insufficient Wallet Balance."
-        )
-
-    # Perform atomic deduction
-    before_bal = wallet.available_balance
-    wallet.available_balance -= deduct_amount
-    after_bal = wallet.available_balance
-    wallet.updated_at = datetime.now(timezone.utc)
-
     val_ref = idempotency_key_val or f"VAL-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
-    tx_id = f"WTXN-VOTER-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+    today_str = datetime.now().strftime("%Y%m%d")
+    unique_suffix = uuid4().hex[:6].upper()
+    tx_id = f"TXN-{today_str}-{unique_suffix}"
+    rcp_no = f"RCP-{today_str}-{unique_suffix}"
     now_utc = datetime.now(timezone.utc)
 
-    # Record immutable wallet transaction ledger
-    tx = WalletTransactionModel(
-        transaction_id=tx_id,
-        wallet_id=wallet.id,
-        transaction_type="VOTER_AMOUNT_DEBIT",
-        direction="DEBIT",
-        amount=deduct_amount,
-        balance_before=before_bal,
-        balance_after=after_bal,
-        reference_type="VOTER_ALLOCATION",
-        reference_id=str(voter.id),
-        idempotency_key=idempotency_key_val,
-        remarks=remarks_val or f"Disbursed ₹{float(deduct_amount):,.2f} for voter {voter.voter_name} ({voter.unique_key})",
-        created_by=current_user.id,
-        created_at=now_utc
-    )
-    db.add(tx)
-    db.flush()
-
-    # Record voter amount allocation
     alloc = VoterAmountAllocationModel(
         allocation_reference=val_ref,
         voter_id=voter.id,
         user_id=current_user.id,
-        wallet_transaction_id=tx.id,
         amount=deduct_amount,
         allocation_date=now_utc,
         status="ACTIVE",
@@ -2891,19 +3164,16 @@ def submit_voter_payment(
     )
     db.add(alloc)
 
-    # Record in Payments ledger
-    today_str = datetime.now().strftime("%Y%m%d")
-    unique_suffix = uuid4().hex[:6].upper()
     payment = PaymentModel(
-        transaction_id=f"TXN-{today_str}-{unique_suffix}",
-        receipt_number=f"RCP-{today_str}-{unique_suffix}",
+        transaction_id=tx_id,
+        receipt_number=rcp_no,
         voter_id=voter.id,
         amount=deduct_amount,
         payment_date=date.today(),
-        payment_method="Wallet",
+        payment_method="Direct",
         payment_status="Paid",
         remarks=remarks_val,
-        transaction_reference=tx_id,
+        transaction_reference=val_ref,
         voter_name=voter.voter_name,
         epic_no=voter.voter_id,
         district=getattr(voter.document, "district", "") if voter.document else "",
@@ -2916,11 +3186,10 @@ def submit_voter_payment(
     )
     db.add(payment)
 
-    # Record audit log
     db.add(AuditLogModel(
         user_id=current_user.id,
         action="VOTER_PAYMENT_SUBMITTED",
-        details=f"User @{current_user.username} submitted payment of ₹{float(deduct_amount):,.2f} for voter {voter.voter_name} ({voter.unique_key}). Wallet new balance: ₹{after_bal:,.2f}",
+        details=f"User @{current_user.username} submitted payment of ₹{float(deduct_amount):,.2f} for voter {voter.voter_name} ({voter.unique_key}).",
         ip_address="127.0.0.1",
         created_at=now_utc
     ))
@@ -2936,10 +3205,9 @@ def submit_voter_payment(
         "deducted_amount": float(deduct_amount),
         "transaction_id": tx_id,
         "transaction_date": now_utc.isoformat(),
-        "wallet_balance": float(after_bal),
-        "updated_balance": float(after_bal),
         "remarks": remarks_val
     }
+
 
 @app.patch("/api/voters/{voter_id}/remarks", tags=["Voter Payment"])
 def update_voter_remarks(
@@ -4887,78 +5155,57 @@ def get_audit_logs(
     return [l.to_dict() for l in logs]
 
 # =====================================================================
-# 13. WALLET MANAGEMENT & CONSTITUENCY/WARD VOTER ALLOCATION
+# 13. CONSTITUENCY/WARD VOTER ALLOCATION & GEOGRAPHIC SCOPE
 # =====================================================================
-
-class FundAdminWalletRequest(BaseModel):
-    amount: float = Field(..., gt=0, description="Funding amount must be greater than zero")
-    transaction_date: Optional[datetime] = None
-    payment_method: str = "Bank Transfer"
-    transaction_reference: Optional[str] = None
-    funding_source: Optional[str] = "Manual Entry"
-    verification_status: Optional[str] = "Verified"
-    remarks: Optional[str] = None
-
-class AllocateUserWalletRequest(BaseModel):
-    user_id: int
-    amount: float = Field(..., gt=0, description="Allocation amount must be greater than zero")
-    allocation_date: Optional[datetime] = None
-    remarks: Optional[str] = None
-    idempotency_key: Optional[str] = None
 
 class CreateGeographicAssignmentRequest(BaseModel):
     user_id: int
-    district: str
+    district: Optional[str] = None
     constituency: str
     wards: List[str] = Field(default_factory=list)
-    area: Optional[str] = None
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
-    status: str = "ACTIVE"
+    polling_stations: List[str] = Field(default_factory=list)
+    description: Optional[str] = None
 
 class UpdateGeographicAssignmentRequest(BaseModel):
     district: Optional[str] = None
     constituency: Optional[str] = None
     wards: Optional[List[str]] = None
-    area: Optional[str] = None
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
+    polling_stations: Optional[List[str]] = None
     status: Optional[str] = None
+    description: Optional[str] = None
 
 class CreateDistrictRequest(BaseModel):
-    name: str
-    code: Optional[str] = None
-    state: Optional[str] = "Andhra Pradesh"
+    name: str = Field(..., min_length=2, max_length=100)
+    state: str = Field("Andhra Pradesh", max_length=100)
+    description: Optional[str] = None
 
 class UpdateDistrictRequest(BaseModel):
-    name: Optional[str] = None
-    code: Optional[str] = None
-    state: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=2, max_length=100)
+    state: Optional[str] = Field(None, max_length=100)
+    description: Optional[str] = None
 
 class CreateConstituencyRequest(BaseModel):
-    name: str
-    code: Optional[str] = None
-    district_id: Optional[int] = None
-    district_name: str
+    district_id: int
+    name: str = Field(..., min_length=2, max_length=100)
+    code: Optional[str] = Field(None, max_length=50)
+    description: Optional[str] = None
 
 class UpdateConstituencyRequest(BaseModel):
-    name: Optional[str] = None
-    code: Optional[str] = None
     district_id: Optional[int] = None
-    district_name: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=2, max_length=100)
+    code: Optional[str] = Field(None, max_length=50)
+    description: Optional[str] = None
 
 class CreateWardRequest(BaseModel):
-    ward_number: str
-    constituency_id: Optional[int] = None
-    constituency_name: str
-    area_name: Optional[str] = None
+    constituency_id: int
+    ward_number: str = Field(..., min_length=1, max_length=50)
+    ward_name: Optional[str] = Field(None, max_length=100)
     description: Optional[str] = None
 
 class UpdateWardRequest(BaseModel):
-    ward_number: Optional[str] = None
     constituency_id: Optional[int] = None
-    constituency_name: Optional[str] = None
-    area_name: Optional[str] = None
+    ward_number: Optional[str] = Field(None, min_length=1, max_length=50)
+    ward_name: Optional[str] = Field(None, max_length=100)
     description: Optional[str] = None
 
 class AssignVoterAmountRequest(BaseModel):
@@ -4970,371 +5217,6 @@ class AssignVoterAmountRequest(BaseModel):
 
 class ReverseAllocationRequest(BaseModel):
     reason: str = Field(..., min_length=3, description="A valid reason is required for reversal")
-
-def get_or_create_admin_wallet(db: Session, admin_id: int) -> WalletModel:
-    w = db.query(WalletModel).filter(WalletModel.owner_type == "ADMIN", WalletModel.owner_id == admin_id).first()
-    if not w:
-        w = WalletModel(
-            owner_type="ADMIN",
-            owner_id=admin_id,
-            available_balance=Decimal("0.00"),
-            currency="INR",
-            status="ACTIVE",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db.add(w)
-        db.commit()
-        db.refresh(w)
-    return w
-
-def get_or_create_user_wallet(db: Session, user_id: int) -> WalletModel:
-    w = db.query(WalletModel).filter(WalletModel.owner_type == "USER", WalletModel.owner_id == user_id).first()
-    if not w:
-        w = WalletModel(
-            owner_type="USER",
-            owner_id=user_id,
-            available_balance=Decimal("0.00"),
-            currency="INR",
-            status="ACTIVE",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db.add(w)
-        db.commit()
-        db.refresh(w)
-    return w
-
-# --- Admin Wallet Endpoints ---
-
-@app.get("/api/admin/wallet", tags=["Wallet Management"])
-def get_admin_wallet(
-    current_admin: UserModel = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
-    wallet = get_or_create_admin_wallet(db, current_admin.id)
-    
-    total_added = db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-        WalletTransactionModel.wallet_id == wallet.id,
-        WalletTransactionModel.transaction_type == "ADMIN_WALLET_CREDIT",
-        WalletTransactionModel.direction == "CREDIT"
-    ).scalar()
-
-    total_allocated = db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-        WalletTransactionModel.wallet_id == wallet.id,
-        WalletTransactionModel.transaction_type == "ADMIN_TO_USER_ALLOCATION",
-        WalletTransactionModel.direction == "DEBIT"
-    ).scalar()
-
-    total_spent_by_users = db.query(func.coalesce(func.sum(VoterAmountAllocationModel.amount), 0)).filter(
-        VoterAmountAllocationModel.status == "ACTIVE"
-    ).scalar()
-
-    total_refunds = db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-        WalletTransactionModel.transaction_type.in_(["TRANSACTION_REVERSAL", "REFUND"])
-    ).scalar()
-
-    recent_txs = db.query(WalletTransactionModel).filter(
-        WalletTransactionModel.wallet_id == wallet.id
-    ).order_by(desc(WalletTransactionModel.created_at)).limit(10).all()
-
-    return {
-        "wallet": wallet.to_dict(),
-        "available_balance": float(wallet.available_balance or 0.0),
-        "total_amount_added": float(total_added or 0.0),
-        "total_allocated_to_users": float(total_allocated or 0.0),
-        "total_spent_by_users": float(total_spent_by_users or 0.0),
-        "total_refunds": float(total_refunds or 0.0),
-        "recent_transactions": [tx.to_dict() for tx in recent_txs]
-    }
-
-@app.post("/api/admin/wallet/fund", tags=["Wallet Management"])
-def fund_admin_wallet(
-    req: FundAdminWalletRequest,
-    current_admin: UserModel = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
-    if req.amount <= 0:
-        raise HTTPException(status_code=400, detail="Funding amount must be greater than zero.")
-
-    get_or_create_admin_wallet(db, current_admin.id)
-    wallet = db.query(WalletModel).filter(
-        WalletModel.owner_type == "ADMIN",
-        WalletModel.owner_id == current_admin.id
-    ).with_for_update().first()
-
-    balance_before = wallet.available_balance
-    wallet.available_balance += Decimal(str(req.amount))
-    balance_after = wallet.available_balance
-    wallet.updated_at = datetime.now(timezone.utc)
-
-    tx_id = f"WTXN-FUND-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
-    tx = WalletTransactionModel(
-        transaction_id=tx_id,
-        wallet_id=wallet.id,
-        transaction_type="ADMIN_WALLET_CREDIT",
-        direction="CREDIT",
-        amount=Decimal(str(req.amount)),
-        balance_before=balance_before,
-        balance_after=balance_after,
-        reference_type="FUNDING",
-        reference_id=req.transaction_reference or tx_id,
-        payment_method=req.payment_method,
-        remarks=req.remarks or f"Funded via {req.payment_method}. Source: {req.funding_source}, Status: {req.verification_status}",
-        created_by=current_admin.id,
-        created_at=req.transaction_date or datetime.now(timezone.utc)
-    )
-    db.add(tx)
-
-    db.add(AuditLogModel(
-        user_id=current_admin.id,
-        action="ADMIN_WALLET_FUNDED",
-        details=f"Admin added ₹{req.amount:,.2f} to wallet via {req.payment_method} (Ref: {req.transaction_reference or tx_id}). Balance: ₹{balance_after:,.2f}",
-        ip_address="127.0.0.1",
-        created_at=datetime.now(timezone.utc)
-    ))
-    db.commit()
-    db.refresh(wallet)
-
-    return {
-        "status": "ok",
-        "message": f"Successfully added ₹{req.amount:,.2f} to Admin Wallet.",
-        "wallet": wallet.to_dict(),
-        "transaction": tx.to_dict()
-    }
-
-@app.get("/api/admin/wallet/transactions", tags=["Wallet Management"])
-def get_admin_wallet_transactions(
-    page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
-    direction: Optional[str] = None,
-    transaction_type: Optional[str] = None,
-    search: Optional[str] = None,
-    from_date: Optional[str] = None,
-    to_date: Optional[str] = None,
-    current_admin: UserModel = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
-    wallet = get_or_create_admin_wallet(db, current_admin.id)
-    q = db.query(WalletTransactionModel).filter(WalletTransactionModel.wallet_id == wallet.id)
-
-    if direction:
-        q = q.filter(WalletTransactionModel.direction == direction.upper())
-    if transaction_type:
-        q = q.filter(WalletTransactionModel.transaction_type == transaction_type)
-    if search:
-        term = f"%{search.strip()}%"
-        q = q.filter(or_(
-            WalletTransactionModel.transaction_id.ilike(term),
-            WalletTransactionModel.reference_id.ilike(term),
-            WalletTransactionModel.remarks.ilike(term)
-        ))
-    if from_date:
-        try:
-            fd = datetime.fromisoformat(from_date)
-            q = q.filter(WalletTransactionModel.created_at >= fd)
-        except Exception:
-            pass
-    if to_date:
-        try:
-            td = datetime.fromisoformat(to_date)
-            q = q.filter(WalletTransactionModel.created_at <= td)
-        except Exception:
-            pass
-
-    total = q.count()
-    items = q.order_by(desc(WalletTransactionModel.created_at)).offset((page - 1) * limit).limit(limit).all()
-    return {
-        "items": [tx.to_dict() for tx in items],
-        "total": total,
-        "page": page,
-        "limit": limit
-    }
-
-# --- User Wallet Allocation Endpoints (Admin -> User) ---
-
-@app.get("/api/admin/wallet/users", tags=["Wallet Management"])
-def list_user_wallets(
-    current_admin: UserModel = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
-    users = db.query(UserModel).order_by(UserModel.username).all()
-    res = []
-    for u in users:
-        w = db.query(WalletModel).filter(WalletModel.owner_type == "USER", WalletModel.owner_id == u.id).first()
-        assignments = db.query(UserGeographicAssignmentModel).filter(
-            UserGeographicAssignmentModel.user_id == u.id,
-            UserGeographicAssignmentModel.status == "ACTIVE"
-        ).all()
-        constituencies = sorted(list(set(a.constituency for a in assignments if a.constituency)))
-        wards_set = set()
-        for a in assignments:
-            for w_val in a.to_dict()["wards"]:
-                wards_set.add(str(w_val))
-        wards = sorted(list(wards_set))
-
-        total_allocated = 0.0
-        total_spent = 0.0
-        if w:
-            total_allocated = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-                WalletTransactionModel.wallet_id == w.id,
-                WalletTransactionModel.transaction_type == "USER_WALLET_CREDIT"
-            ).scalar() or 0.0)
-            total_spent = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-                WalletTransactionModel.wallet_id == w.id,
-                WalletTransactionModel.transaction_type == "VOTER_AMOUNT_DEBIT"
-            ).scalar() or 0.0)
-
-        res.append({
-            "user_id": u.id,
-            "username": u.username,
-            "full_name": u.full_name,
-            "email": u.email,
-            "role": u.role,
-            "is_active": u.is_active,
-            "assigned_constituency": ", ".join(constituencies) if constituencies else "None Assigned",
-            "assigned_wards": ", ".join(wards) if wards else "All / None",
-            "has_geographic_assignment": len(assignments) > 0,
-            "available_balance": float(w.available_balance if w else 0.0),
-            "total_allocated": total_allocated,
-            "total_spent": total_spent,
-            "status": "Active" if (w and w.status == "ACTIVE" and u.is_active) else "Inactive"
-        })
-    return res
-
-@app.post("/api/admin/wallet/allocate", tags=["Wallet Management"])
-def allocate_amount_to_user(
-    req: AllocateUserWalletRequest,
-    current_admin: UserModel = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
-    if req.amount <= 0:
-        raise HTTPException(status_code=400, detail="Allocation amount must be greater than zero.")
-
-    if req.idempotency_key:
-        existing_tx = db.query(WalletTransactionModel).filter(
-            WalletTransactionModel.idempotency_key == req.idempotency_key
-        ).first()
-        if existing_tx:
-            admin_wallet = get_or_create_admin_wallet(db, current_admin.id)
-            user_wallet = get_or_create_user_wallet(db, req.user_id)
-            return {
-                "status": "ok",
-                "message": "Allocation already processed (idempotency key matched).",
-                "admin_balance": float(admin_wallet.available_balance),
-                "user_balance": float(user_wallet.available_balance),
-                "transaction_id": existing_tx.transaction_id
-            }
-
-    target_user = db.query(UserModel).filter(UserModel.id == req.user_id).first()
-    if not target_user:
-        raise HTTPException(status_code=404, detail="Target user not found.")
-    if not target_user.is_active:
-        raise HTTPException(status_code=400, detail="Cannot allocate funds to an inactive user account.")
-
-    get_or_create_admin_wallet(db, current_admin.id)
-    get_or_create_user_wallet(db, target_user.id)
-
-    admin_wallet = db.query(WalletModel).filter(
-        WalletModel.owner_type == "ADMIN",
-        WalletModel.owner_id == current_admin.id
-    ).with_for_update().first()
-
-    user_wallet = db.query(WalletModel).filter(
-        WalletModel.owner_type == "USER",
-        WalletModel.owner_id == target_user.id
-    ).with_for_update().first()
-
-    alloc_amount = Decimal(str(req.amount))
-    if admin_wallet.available_balance < alloc_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient Admin Wallet balance. Available: ₹{admin_wallet.available_balance:,.2f}, Requested: ₹{req.amount:,.2f}."
-        )
-
-    admin_before = admin_wallet.available_balance
-    admin_wallet.available_balance -= alloc_amount
-    admin_after = admin_wallet.available_balance
-    admin_wallet.updated_at = datetime.now(timezone.utc)
-
-    user_before = user_wallet.available_balance
-    user_wallet.available_balance += alloc_amount
-    user_after = user_wallet.available_balance
-    user_wallet.updated_at = datetime.now(timezone.utc)
-
-    date_now = req.allocation_date or datetime.now(timezone.utc)
-    admin_tx_id = f"WTXN-ALOC-OUT-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
-    user_tx_id = f"WTXN-ALOC-IN-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
-
-    admin_tx = WalletTransactionModel(
-        transaction_id=admin_tx_id,
-        wallet_id=admin_wallet.id,
-        transaction_type="ADMIN_TO_USER_ALLOCATION",
-        direction="DEBIT",
-        amount=alloc_amount,
-        balance_before=admin_before,
-        balance_after=admin_after,
-        reference_type="USER_ALLOCATION",
-        reference_id=str(target_user.id),
-        remarks=req.remarks or f"Allocated ₹{req.amount:,.2f} to user @{target_user.username}",
-        idempotency_key=req.idempotency_key,
-        created_by=current_admin.id,
-        created_at=date_now
-    )
-    user_tx = WalletTransactionModel(
-        transaction_id=user_tx_id,
-        wallet_id=user_wallet.id,
-        transaction_type="USER_WALLET_CREDIT",
-        direction="CREDIT",
-        amount=alloc_amount,
-        balance_before=user_before,
-        balance_after=user_after,
-        reference_type="ADMIN_ALLOCATION",
-        reference_id=str(admin_wallet.id),
-        remarks=req.remarks or f"Received ₹{req.amount:,.2f} allocation from Admin",
-        idempotency_key=req.idempotency_key,
-        created_by=current_admin.id,
-        created_at=date_now
-    )
-    db.add(admin_tx)
-    db.add(user_tx)
-
-    db.add(AuditLogModel(
-        user_id=current_admin.id,
-        action="USER_WALLET_ALLOCATED",
-        details=f"Admin allocated ₹{req.amount:,.2f} to user @{target_user.username}. Admin balance: ₹{admin_after:,.2f}, User balance: ₹{user_after:,.2f}",
-        ip_address="127.0.0.1",
-        created_at=datetime.now(timezone.utc)
-    ))
-    db.commit()
-
-    return {
-        "status": "ok",
-        "message": f"Successfully allocated ₹{req.amount:,.2f} to @{target_user.username}.",
-        "admin_balance": float(admin_after),
-        "user_balance": float(user_after),
-        "admin_transaction_id": admin_tx_id,
-        "user_transaction_id": user_tx_id
-    }
-
-@app.get("/api/admin/wallet/users/{user_id}/transactions", tags=["Wallet Management"])
-def get_user_wallet_transactions_admin(
-    user_id: int,
-    page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
-    current_admin: UserModel = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
-    wallet = get_or_create_user_wallet(db, user_id)
-    q = db.query(WalletTransactionModel).filter(WalletTransactionModel.wallet_id == wallet.id)
-    total = q.count()
-    items = q.order_by(desc(WalletTransactionModel.created_at)).offset((page - 1) * limit).limit(limit).all()
-    return {
-        "items": [tx.to_dict() for tx in items],
-        "total": total,
-        "page": page,
-        "limit": limit
-    }
 
 # --- Geographic Assignment Endpoints ---
 
@@ -5775,94 +5657,11 @@ def get_available_locations(
             "wards": sorted(list(wards))
         }
 
-# --- User Wallet Endpoints (Current User) ---
-
 def normalize_ward_value(val: Optional[str]) -> str:
     if not val:
         return ""
     val_clean = str(val).strip().lower()
     return re.sub(r'[^0-9a-zA-Z]', '', val_clean)
-
-@app.get("/api/user/wallet", tags=["User Wallet"])
-def get_current_user_wallet(
-    current_user: UserModel = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    is_admin = is_admin_or_super(current_user)
-    if is_admin:
-        wallet = get_or_create_admin_wallet(db, current_user.id)
-        total_allocated = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-            WalletTransactionModel.wallet_id == wallet.id,
-            WalletTransactionModel.transaction_type == "ADMIN_WALLET_CREDIT",
-            WalletTransactionModel.direction == "CREDIT"
-        ).scalar() or 0.0)
-    else:
-        wallet = get_or_create_user_wallet(db, current_user.id)
-        total_allocated = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-            WalletTransactionModel.wallet_id == wallet.id,
-            WalletTransactionModel.transaction_type == "USER_WALLET_CREDIT",
-            WalletTransactionModel.direction == "CREDIT"
-        ).scalar() or 0.0)
-
-    total_spent = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-        WalletTransactionModel.wallet_id == wallet.id,
-        WalletTransactionModel.transaction_type == "VOTER_AMOUNT_DEBIT"
-    ).scalar() or 0.0)
-
-    total_refunded = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-        WalletTransactionModel.wallet_id == wallet.id,
-        WalletTransactionModel.transaction_type == "TRANSACTION_REVERSAL"
-    ).scalar() or 0.0)
-
-    recent_txs = db.query(WalletTransactionModel).filter(
-        WalletTransactionModel.wallet_id == wallet.id
-    ).order_by(desc(WalletTransactionModel.created_at)).limit(10).all()
-
-    assignments = []
-    if not is_admin:
-        assignments = db.query(UserGeographicAssignmentModel).filter(
-            UserGeographicAssignmentModel.user_id == current_user.id,
-            UserGeographicAssignmentModel.status == "ACTIVE"
-        ).all()
-
-    return {
-        "wallet": wallet.to_dict(),
-        "available_balance": float(wallet.available_balance or 0.0),
-        "total_amount_allocated": total_allocated,
-        "total_amount_spent": total_spent,
-        "total_amount_refunded": total_refunded,
-        "recent_transactions": [tx.to_dict() for tx in recent_txs],
-        "geographic_assignments": [a.to_dict() for a in assignments],
-        "is_admin": is_admin
-    }
-
-@app.get("/api/user/wallet/transactions", tags=["User Wallet"])
-def get_current_user_wallet_transactions(
-    page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
-    direction: Optional[str] = None,
-    transaction_type: Optional[str] = None,
-    current_user: UserModel = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if is_admin_or_super(current_user):
-        wallet = get_or_create_admin_wallet(db, current_user.id)
-    else:
-        wallet = get_or_create_user_wallet(db, current_user.id)
-
-    q = db.query(WalletTransactionModel).filter(WalletTransactionModel.wallet_id == wallet.id)
-    if direction:
-        q = q.filter(WalletTransactionModel.direction == direction.upper())
-    if transaction_type:
-        q = q.filter(WalletTransactionModel.transaction_type == transaction_type)
-    total = q.count()
-    items = q.order_by(desc(WalletTransactionModel.created_at)).offset((page - 1) * limit).limit(limit).all()
-    return {
-        "items": [tx.to_dict() for tx in items],
-        "total": total,
-        "page": page,
-        "limit": limit
-    }
 
 # --- Restricted Voter Access & Amount Assignment Endpoints ---
 
@@ -5989,25 +5788,21 @@ def assign_voter_amount(
 
     is_admin = is_admin_or_super(current_user)
 
-    # Idempotency check
     if req.idempotency_key:
         existing = db.query(VoterAmountAllocationModel).filter(
             VoterAmountAllocationModel.allocation_reference == req.idempotency_key
         ).first()
         if existing:
-            active_wallet = get_or_create_admin_wallet(db, current_user.id) if is_admin else get_or_create_user_wallet(db, current_user.id)
             return {
                 "status": "ok",
                 "message": "Allocation already processed.",
-                "allocation": existing.to_dict(),
-                "updated_balance": float(active_wallet.available_balance)
+                "allocation": existing.to_dict()
             }
 
     voter = db.query(VoterRecordModel).filter(VoterRecordModel.id == req.voter_id).first()
     if not voter:
         raise HTTPException(status_code=404, detail="Voter not found.")
 
-    # Geographic Scope Verification for non-admin
     if not is_admin:
         assignments = db.query(UserGeographicAssignmentModel).filter(
             UserGeographicAssignmentModel.user_id == current_user.id,
@@ -6033,77 +5828,13 @@ def assign_voter_amount(
         if permitted_wards_norm and v_ward_norm not in permitted_wards_norm:
             raise HTTPException(status_code=403, detail="Voter is outside your assigned wards.")
 
-    # Atomic Wallet Lock: Support Admin master treasury as well as User wallets
     assign_amount = Decimal(str(req.amount))
-    wallet = None
-
-    if is_admin:
-        get_or_create_admin_wallet(db, current_user.id)
-        admin_w = db.query(WalletModel).filter(
-            WalletModel.owner_type == "ADMIN",
-            WalletModel.owner_id == current_user.id
-        ).with_for_update().first()
-
-        user_w = db.query(WalletModel).filter(
-            WalletModel.owner_type == "USER",
-            WalletModel.owner_id == current_user.id
-        ).with_for_update().first()
-
-        if admin_w and admin_w.available_balance >= assign_amount:
-            wallet = admin_w
-        elif user_w and user_w.available_balance >= assign_amount:
-            wallet = user_w
-        else:
-            avail = admin_w.available_balance if admin_w else (user_w.available_balance if user_w else Decimal("0.00"))
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient wallet balance. Available: ₹{avail:,.2f}, Requested: ₹{req.amount:,.2f}."
-            )
-    else:
-        get_or_create_user_wallet(db, current_user.id)
-        wallet = db.query(WalletModel).filter(
-            WalletModel.owner_type == "USER",
-            WalletModel.owner_id == current_user.id
-        ).with_for_update().first()
-
-        if not wallet or wallet.available_balance < assign_amount:
-            avail = wallet.available_balance if wallet else Decimal("0.00")
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient wallet balance. Available: ₹{avail:,.2f}, Requested: ₹{req.amount:,.2f}."
-            )
-
-    before_bal = wallet.available_balance
-    wallet.available_balance -= assign_amount
-    after_bal = wallet.available_balance
-    wallet.updated_at = datetime.now(timezone.utc)
-
     val_ref = req.idempotency_key or f"VAL-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
-    tx_id = f"WTXN-VOTER-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
-
-    tx = WalletTransactionModel(
-        transaction_id=tx_id,
-        wallet_id=wallet.id,
-        transaction_type="VOTER_AMOUNT_DEBIT",
-        direction="DEBIT",
-        amount=assign_amount,
-        balance_before=before_bal,
-        balance_after=after_bal,
-        reference_type="VOTER_ALLOCATION",
-        reference_id=str(voter.id),
-        idempotency_key=req.idempotency_key,
-        remarks=req.remarks or f"Assigned ₹{req.amount:,.2f} to voter {voter.voter_name} (EPIC: {voter.voter_id})",
-        created_by=current_user.id,
-        created_at=req.assignment_date or datetime.now(timezone.utc)
-    )
-    db.add(tx)
-    db.flush()
 
     alloc = VoterAmountAllocationModel(
         allocation_reference=val_ref,
         voter_id=voter.id,
         user_id=current_user.id,
-        wallet_transaction_id=tx.id,
         amount=assign_amount,
         allocation_date=req.assignment_date or datetime.now(timezone.utc),
         status="ACTIVE",
@@ -6116,7 +5847,7 @@ def assign_voter_amount(
     db.add(AuditLogModel(
         user_id=current_user.id,
         action="VOTER_AMOUNT_ASSIGNED",
-        details=f"User @{current_user.username} ({wallet.owner_type} wallet) assigned ₹{req.amount:,.2f} to voter {voter.voter_name} ({voter.voter_id}). Balance: ₹{after_bal:,.2f}",
+        details=f"User @{current_user.username} assigned ₹{req.amount:,.2f} to voter {voter.voter_name} (EPIC: {voter.voter_id}).",
         ip_address="127.0.0.1",
         created_at=datetime.now(timezone.utc)
     ))
@@ -6127,54 +5858,27 @@ def assign_voter_amount(
         "status": "ok",
         "message": f"Successfully assigned ₹{req.amount:,.2f} to voter {voter.voter_name}.",
         "allocation": alloc.to_dict(),
-        "updated_balance": float(after_bal),
-        "transaction_id": tx_id
+        "transaction_id": val_ref
     }
 
 @app.get("/api/user/voter-allocations", tags=["Voter Allocation"])
-def list_user_voter_allocations(
+def get_user_voter_allocations(
     page: int = Query(1, ge=1),
-    limit: int = Query(25, ge=1, le=100),
-    search: Optional[str] = None,
-    ward: Optional[str] = None,
-    from_date: Optional[str] = None,
-    to_date: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+    voter_id: Optional[int] = None,
+    status: Optional[str] = None,
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    q = db.query(VoterAmountAllocationModel).join(VoterRecordModel, VoterAmountAllocationModel.voter_id == VoterRecordModel.id)
+    q = db.query(VoterAmountAllocationModel)
     if current_user.role.lower() != "admin":
         q = q.filter(VoterAmountAllocationModel.user_id == current_user.id)
-
-    if search:
-        term = f"%{search.strip()}%"
-        q = q.filter(or_(
-            VoterAmountAllocationModel.allocation_reference.ilike(term),
-            VoterRecordModel.voter_name.ilike(term),
-            VoterRecordModel.voter_id.ilike(term)
-        ))
-
-    if ward:
-        q = q.join(DocumentModel, VoterRecordModel.document_id == DocumentModel.id).filter(
-            DocumentModel.ward_number.ilike(f"%{ward}%")
-        )
-
-    if from_date:
-        try:
-            fd = datetime.fromisoformat(from_date)
-            q = q.filter(VoterAmountAllocationModel.allocation_date >= fd)
-        except Exception:
-            pass
-
-    if to_date:
-        try:
-            td = datetime.fromisoformat(to_date)
-            q = q.filter(VoterAmountAllocationModel.allocation_date <= td)
-        except Exception:
-            pass
-
+    if voter_id:
+        q = q.filter(VoterAmountAllocationModel.voter_id == voter_id)
+    if status:
+        q = q.filter(VoterAmountAllocationModel.status == status.upper())
     total = q.count()
-    items = q.order_by(desc(VoterAmountAllocationModel.allocation_date)).offset((page - 1) * limit).limit(limit).all()
+    items = q.order_by(desc(VoterAmountAllocationModel.created_at)).offset((page - 1) * limit).limit(limit).all()
     return {
         "items": [a.to_dict() for a in items],
         "total": total,
@@ -6212,55 +5916,6 @@ def reverse_voter_allocation(
     if alloc.status == "REVERSED":
         raise HTTPException(status_code=400, detail="This allocation has already been reversed.")
 
-    # Find the wallet that was debited from the original transaction
-    orig_tx = db.query(WalletTransactionModel).filter(
-        WalletTransactionModel.id == alloc.wallet_transaction_id
-    ).first()
-
-    wallet = None
-    if orig_tx and orig_tx.wallet_id:
-        wallet = db.query(WalletModel).filter(WalletModel.id == orig_tx.wallet_id).with_for_update().first()
-
-    if not wallet:
-        # Fallback to user's wallet
-        alloc_user = db.query(UserModel).filter(UserModel.id == alloc.user_id).first()
-        is_alloc_admin = alloc_user and is_admin_or_super(alloc_user)
-        if is_alloc_admin:
-            wallet = db.query(WalletModel).filter(
-                WalletModel.owner_type == "ADMIN",
-                WalletModel.owner_id == alloc.user_id
-            ).with_for_update().first()
-        else:
-            wallet = db.query(WalletModel).filter(
-                WalletModel.owner_type == "USER",
-                WalletModel.owner_id == alloc.user_id
-            ).with_for_update().first()
-
-    if not wallet:
-        raise HTTPException(status_code=404, detail="Associated wallet not found for restoration.")
-
-    before_bal = wallet.available_balance
-    wallet.available_balance += alloc.amount
-    after_bal = wallet.available_balance
-    wallet.updated_at = datetime.now(timezone.utc)
-
-    rev_tx_id = f"WTXN-REV-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
-    rev_tx = WalletTransactionModel(
-        transaction_id=rev_tx_id,
-        wallet_id=wallet.id,
-        transaction_type="TRANSACTION_REVERSAL",
-        direction="CREDIT",
-        amount=alloc.amount,
-        balance_before=before_bal,
-        balance_after=after_bal,
-        reference_type="REVERSAL",
-        reference_id=alloc.allocation_reference,
-        remarks=f"Reversal of {alloc.allocation_reference}: {req.reason.strip()}",
-        created_by=current_user.id,
-        created_at=datetime.now(timezone.utc)
-    )
-    db.add(rev_tx)
-
     alloc.status = "REVERSED"
     alloc.reversal_reason = req.reason.strip()
     alloc.reversed_at = datetime.now(timezone.utc)
@@ -6269,7 +5924,7 @@ def reverse_voter_allocation(
     db.add(AuditLogModel(
         user_id=current_user.id,
         action="VOTER_ALLOCATION_REVERSED",
-        details=f"Reversed allocation {alloc.allocation_reference} (₹{alloc.amount:,.2f}) for voter ID {alloc.voter_id}. Reason: {req.reason.strip()}. Wallet balance restored to ₹{after_bal:,.2f}",
+        details=f"Reversed allocation {alloc.allocation_reference} (₹{alloc.amount:,.2f}) for voter ID {alloc.voter_id}. Reason: {req.reason.strip()}.",
         ip_address="127.0.0.1",
         created_at=datetime.now(timezone.utc)
     ))
@@ -6277,9 +5932,8 @@ def reverse_voter_allocation(
 
     return {
         "status": "ok",
-        "message": "Allocation reversed successfully and wallet balance restored.",
-        "updated_balance": float(after_bal),
-        "transaction_id": rev_tx_id
+        "message": "Allocation reversed successfully.",
+        "allocation": alloc.to_dict()
     }
 
 # --- Admin Reports & Global Summaries ---
@@ -6325,51 +5979,4 @@ def admin_list_all_voter_allocations(
         "limit": limit
     }
 
-@app.get("/api/admin/wallet/summary", tags=["Admin Reports"])
-def get_admin_wallet_global_summary(
-    current_admin: UserModel = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
-    admin_wallet = get_or_create_admin_wallet(db, current_admin.id)
-    
-    total_funded = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-        WalletTransactionModel.wallet_id == admin_wallet.id,
-        WalletTransactionModel.transaction_type == "ADMIN_WALLET_CREDIT"
-    ).scalar() or 0.0)
 
-    total_allocated_to_users = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-        WalletTransactionModel.wallet_id == admin_wallet.id,
-        WalletTransactionModel.transaction_type == "ADMIN_TO_USER_ALLOCATION"
-    ).scalar() or 0.0)
-
-    total_user_wallets_balance = float(db.query(func.coalesce(func.sum(WalletModel.available_balance), 0)).filter(
-        WalletModel.owner_type == "USER"
-    ).scalar() or 0.0)
-
-    total_spent_on_voters = float(db.query(func.coalesce(func.sum(VoterAmountAllocationModel.amount), 0)).filter(
-        VoterAmountAllocationModel.status == "ACTIVE"
-    ).scalar() or 0.0)
-
-    total_refunds = float(db.query(func.coalesce(func.sum(WalletTransactionModel.amount), 0)).filter(
-        WalletTransactionModel.transaction_type.in_(["TRANSACTION_REVERSAL", "REFUND"])
-    ).scalar() or 0.0)
-
-    active_user_wallets_count = db.query(WalletModel).filter(
-        WalletModel.owner_type == "USER",
-        WalletModel.status == "ACTIVE"
-    ).count()
-
-    total_allocations_count = db.query(VoterAmountAllocationModel).filter(
-        VoterAmountAllocationModel.status == "ACTIVE"
-    ).count()
-
-    return {
-        "admin_available_balance": float(admin_wallet.available_balance),
-        "total_amount_funded": total_funded,
-        "total_allocated_to_users": total_allocated_to_users,
-        "total_user_wallets_balance": total_user_wallets_balance,
-        "total_spent_on_voters": total_spent_on_voters,
-        "total_refunds": total_refunds,
-        "active_user_wallets_count": active_user_wallets_count,
-        "total_allocations_count": total_allocations_count
-    }

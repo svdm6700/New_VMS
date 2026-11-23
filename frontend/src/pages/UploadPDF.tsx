@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   UploadCloud,
@@ -14,7 +14,13 @@ import {
   Building2,
   Landmark,
   Home,
-  Hash
+  Hash,
+  Layers,
+  FileText,
+  RotateCcw,
+  Check,
+  Clock,
+  AlertTriangle
 } from 'lucide-react';
 import { FileUpload } from '../components/upload/FileUpload';
 import { UploadProgress } from '../components/upload/UploadProgress';
@@ -22,6 +28,8 @@ import { documentService } from '../services/documentService';
 import { useDocuments } from '../contexts/DocumentContext';
 import { geoService } from '../services/geoService';
 import { useAuth } from '../contexts/AuthContext';
+import { DocumentProgress as IDocumentProgress, DocumentPageItem } from '../types/document';
+import { logger } from '../services/loggingService';
 
 export const UploadPDF: React.FC = () => {
   const navigate = useNavigate();
@@ -46,7 +54,7 @@ export const UploadPDF: React.FC = () => {
     wards: [],
   });
 
-  React.useEffect(() => {
+  useEffect(() => {
     geoService.getLocations().then((locs) => {
       setAvailableLocations(locs);
       if (locs.districts.length === 1 && !district) {
@@ -74,10 +82,14 @@ export const UploadPDF: React.FC = () => {
   const [modelName, setModelName] = useState('llama3.2');
   const [useAi, setUseAi] = useState(false);
 
-  // Processing & Feedback states
+  // Processing & Page-wise Feedback states
   const [isProcessing, setIsProcessing] = useState(false);
+  const [activeDocId, setActiveDocId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processStage, setProcessStage] = useState('Preparing upload...');
+  const [progressData, setProgressData] = useState<IDocumentProgress | null>(null);
+  const [retryingPage, setRetryingPage] = useState<number | null>(null);
+  const [isRetryingAll, setIsRetryingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -91,7 +103,6 @@ export const UploadPDF: React.FC = () => {
   const isFormValid = isFileValid && isDistrictValid && isConstituencyValid && isAreaValid && isWardValid;
 
   const handleStartProcess = async () => {
-    // Mark all fields touched
     setTouched({
       district: true,
       constituency: true,
@@ -108,9 +119,12 @@ export const UploadPDF: React.FC = () => {
     setUploadProgress(0);
     setError(null);
     setSuccess(null);
-    setProcessStage('Uploading PDF document and location metadata to server...');
+    setProgressData(null);
+    setProcessStage('Uploading original PDF document and location metadata to server...');
 
     try {
+      logger.info('Starting document upload', { filename: file.name, size: file.size, district, constituency, ward: wardNumber });
+      
       const uploadRes = await documentService.uploadPdf(file, {
         district: district.trim(),
         constituency: constituency.trim(),
@@ -122,36 +136,55 @@ export const UploadPDF: React.FC = () => {
         onUploadProgress: (p) => {
           setUploadProgress(p);
           if (p === 100) {
-            setProcessStage('PDF & location metadata uploaded! Automatically extracting voter records & storing in database...');
+            setProcessStage('PDF uploaded successfully! Starting background page-wise extraction...');
           }
         },
       });
 
       const docId = uploadRes.id;
+      setActiveDocId(docId);
+      logger.info('Document uploaded, tracking page-wise progress', { docId });
+
       let attempts = 0;
-      const maxAttempts = 120; // 3 minutes timeout for huge files
+      const maxAttempts = 360; // 12 minutes timeout for large bulk files
       let completedDoc: any = null;
 
-      // Poll until backend completes extraction
+      // Real-time Page-Wise Polling
       while (attempts < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
         attempts++;
-        try {
-          const docData = await documentService.getDocument(docId);
-          const st = docData.metadata?.processing_status;
 
-          if (st === 'completed') {
-            completedDoc = docData;
+        try {
+          const prog = await documentService.getDocumentProgress(docId);
+          setProgressData(prog);
+          setUploadProgress(prog.progress_percentage || 0);
+
+          const total = prog.total_pages || 1;
+          const done = prog.processed_pages || 0;
+          const voters = prog.total_voters || 0;
+          const failed = prog.failed_pages || 0;
+
+          if (prog.status === 'completed') {
+            setProcessStage(`Completed! All ${total} pages extracted (${voters.toLocaleString()} voters stored in database).`);
+            completedDoc = await documentService.getDocument(docId);
             break;
-          } else if (st === 'failed') {
-            throw new Error(docData.metadata?.processing_error || 'Automatic extraction failed on server.');
+          } else if (prog.status === 'completed_with_errors') {
+            setProcessStage(`Extraction completed with warnings: ${done} pages succeeded, ${failed} failed.`);
+            completedDoc = await documentService.getDocument(docId);
+            break;
+          } else if (prog.status === 'failed') {
+            throw new Error('Automatic extraction pipeline reported failure.');
           } else {
-            setProcessStage(`Extracting Telugu text & voter records... (${attempts * 2}s)`);
+            const failText = failed > 0 ? ` [${failed} failed]` : '';
+            setProcessStage(
+              `Processing page ${done} of ${total} (${voters.toLocaleString()} voters extracted so far)...${failText}`
+            );
           }
-        } catch (e: any) {
-          if (e.message?.includes('failed on server')) {
-            throw e;
+        } catch (pollErr: any) {
+          if (pollErr.message?.includes('reported failure')) {
+            throw pollErr;
           }
+          console.warn('Progress poll issue:', pollErr);
         }
       }
 
@@ -160,18 +193,49 @@ export const UploadPDF: React.FC = () => {
       if (completedDoc) {
         setActiveDoc(completedDoc);
         const count = completedDoc.metadata?.records_count || completedDoc.records?.length || 0;
-        setSuccess(`"${file.name}" processed successfully! ${count.toLocaleString()} voter records linked to ${area.trim()} (Ward ${wardNumber.trim()}).`);
+        setSuccess(
+          `"${file.name}" processed! ${count.toLocaleString()} voter records linked to ${area.trim()} (Ward ${wardNumber.trim()}).`
+        );
       } else {
         setSuccess(`"${file.name}" uploaded successfully with location details and processing in background!`);
       }
-
-      setTimeout(() => {
-        navigate('/extracted-data');
-      }, 1500);
     } catch (err: any) {
+      logger.error('Document processing failed', { error: err.message });
       setError(err.message || 'Processing failed. Please check the server connection.');
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const handleRetrySinglePage = async (pageNo: number) => {
+    if (!activeDocId) return;
+    try {
+      setRetryingPage(pageNo);
+      logger.info('Retrying individual page', { docId: activeDocId, pageNo });
+      await documentService.retryPage(activeDocId, pageNo);
+      const updated = await documentService.getDocumentProgress(activeDocId);
+      setProgressData(updated);
+    } catch (err: any) {
+      logger.error('Failed to retry page', { docId: activeDocId, pageNo, error: err.message });
+      setError(`Failed to retry page ${pageNo}: ${err.message}`);
+    } finally {
+      setRetryingPage(null);
+    }
+  };
+
+  const handleRetryAllFailed = async () => {
+    if (!activeDocId) return;
+    try {
+      setIsRetryingAll(true);
+      logger.info('Retrying all failed pages', { docId: activeDocId });
+      await documentService.retryFailedPages(activeDocId);
+      const updated = await documentService.getDocumentProgress(activeDocId);
+      setProgressData(updated);
+    } catch (err: any) {
+      logger.error('Failed to retry failed pages', { docId: activeDocId, error: err.message });
+      setError(`Failed to retry pages: ${err.message}`);
+    } finally {
+      setIsRetryingAll(false);
     }
   };
 
@@ -183,7 +247,7 @@ export const UploadPDF: React.FC = () => {
           ఓటర్ డాక్యుమెంట్ అప్‌లోడ్ & వెలికితీత (Upload Voter Document)
         </h1>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Upload any voter document or electoral roll up to 300 MB with location details. All voter records are automatically extracted and stored in the PostgreSQL database.
+          Upload any voter document or electoral roll up to 300 MB. Pages are extracted independently and asynchronously in the background. Completed pages and records become available immediately.
         </p>
       </div>
 
@@ -197,14 +261,120 @@ export const UploadPDF: React.FC = () => {
         {/* File Dropzone */}
         <FileUpload file={file} onFileSelect={setFile} maxSizeMb={300} />
 
-        {/* Processing Progress */}
+        {/* Live Page-Wise Extraction Progress */}
         {isProcessing && file && (
-          <UploadProgress
-            progress={uploadProgress}
-            stage={processStage}
-            filename={file.name}
-            onCancel={() => setIsProcessing(false)}
-          />
+          <div className="space-y-4">
+            <UploadProgress
+              progress={uploadProgress}
+              stage={processStage}
+              filename={file.name}
+              onCancel={() => setIsProcessing(false)}
+            />
+
+            {progressData && (
+              <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between text-xs font-semibold">
+                  <span className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                    <Layers className="w-4 h-4 text-brand-600" />
+                    Page-Wise Background Extraction
+                  </span>
+                  <div className="flex items-center gap-3 text-[11px]">
+                    <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                      {progressData.processed_pages} Done
+                    </span>
+                    {progressData.failed_pages > 0 && (
+                      <span className="text-rose-600 dark:text-rose-400 font-bold">
+                        {progressData.failed_pages} Failed
+                      </span>
+                    )}
+                    <span className="text-brand-600 dark:text-brand-400 font-bold">
+                      {progressData.total_voters.toLocaleString()} Voters Extracted
+                    </span>
+                  </div>
+                </div>
+
+                {/* Individual Page Status Badges */}
+                <div className="max-h-40 overflow-y-auto pr-1">
+                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-1.5 text-[10px]">
+                    {progressData.pages?.map((p) => {
+                      const isDone = p.status === 'completed';
+                      const isFail = p.status === 'failed';
+                      const isProc = p.status === 'processing';
+                      const isRetrying = retryingPage === p.page_number;
+
+                      return (
+                        <div
+                          key={p.page_number}
+                          title={isFail ? `Error: ${p.error_details || 'Failed'}` : `Page ${p.page_number}: ${p.voter_count} voters`}
+                          className={`p-1.5 rounded-lg border text-center transition-all relative group ${
+                            isDone
+                              ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800/50 text-emerald-700 dark:text-emerald-300'
+                              : isFail
+                              ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300'
+                              : isProc
+                              ? 'bg-blue-50 dark:bg-blue-950/40 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-300 animate-pulse'
+                              : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'
+                          }`}
+                        >
+                          <div className="font-bold flex items-center justify-center gap-0.5">
+                            {isDone && <Check className="w-2.5 h-2.5" />}
+                            {isFail && <AlertTriangle className="w-2.5 h-2.5" />}
+                            {isProc && <RefreshCw className="w-2.5 h-2.5 animate-spin" />}
+                            <span>p.{p.page_number}</span>
+                          </div>
+                          <div className="text-[9px] truncate">
+                            {isDone ? `${p.voter_count}v` : p.status}
+                          </div>
+
+                          {/* Hover retry button for failed page */}
+                          {isFail && (
+                            <button
+                              type="button"
+                              onClick={() => handleRetrySinglePage(p.page_number)}
+                              disabled={isRetrying}
+                              className="absolute inset-0 bg-rose-600 text-white rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <RotateCcw className={`w-3 h-3 ${isRetrying ? 'animate-spin' : ''}`} />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Failed Pages Retry Banner */}
+                {progressData.failed_pages > 0 && (
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                    <span className="text-[11px] text-rose-600 dark:text-rose-400 font-medium">
+                      {progressData.failed_pages} page(s) encountered issues during extraction.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleRetryAllFailed}
+                      disabled={isRetryingAll}
+                      className="px-2.5 py-1 text-[11px] font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg flex items-center gap-1 transition-all"
+                    >
+                      <RotateCcw className={`w-3 h-3 ${isRetryingAll ? 'animate-spin' : ''}`} />
+                      Retry All Failed
+                    </button>
+                  </div>
+                )}
+
+                {/* Continue in background button */}
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => navigate('/extracted-data')}
+                    className="text-xs text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-1 font-semibold"
+                  >
+                    <span>View Extracted Records Table while processing...</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         {/* ========================================================= */}
@@ -470,7 +640,7 @@ export const UploadPDF: React.FC = () => {
         {success && (
           <div className="flex items-center gap-2.5 p-3.5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/50 rounded-xl text-xs text-emerald-700 dark:text-emerald-400">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
-            <span>{success} Redirecting to Extracted Data Table...</span>
+            <span>{success}</span>
           </div>
         )}
       </div>

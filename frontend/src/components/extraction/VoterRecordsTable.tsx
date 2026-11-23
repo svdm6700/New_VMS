@@ -971,11 +971,11 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
                           )}
                         </button>
                         <Link
-                          to={`/my-wallet?voter_id=${r.id}`}
+                          to={`/voter-verification?search=${r.unique_key || r.voter_id}`}
                           className="p-1 text-slate-400 hover:text-teal-600 rounded-md"
-                          title="Disburse Funds / Spend on Voter"
+                          title="Verify Voter Record"
                         >
-                          <DollarSign className="w-3.5 h-3.5" />
+                          <Check className="w-3.5 h-3.5" />
                         </Link>
                         <Link
                           to={`/voter-entries?voter_id=${r.id}`}

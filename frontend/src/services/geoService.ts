@@ -1,5 +1,5 @@
 import api from './api';
-import { GeographicAssignment } from '../types/wallet';
+import { GeographicAssignment } from '../types/geo';
 
 export interface District {
   id: number;

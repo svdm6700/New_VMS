@@ -575,6 +575,141 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
                 
     return records
 
+
+def extract_single_page_records(doc, page_no: int, doc_id: str):
+    """
+    Extract structured voter records with photos strictly for a single page (1-based index).
+    Returns a list of voter record dictionaries.
+    """
+    p_idx = page_no - 1
+    if p_idx < 0 or p_idx >= len(doc):
+        return []
+
+    page = doc[p_idx]
+    text = page.get_text("text") or ""
+    records = []
+
+    is_voter_page = any(kw in text for kw in [
+        "వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య",
+        "Sl.No", "S.No", "EPIC", "Voter", "voter"
+    ])
+
+    if is_voter_page:
+        cells = detect_voter_cells(page)
+        if cells:
+            img_infos = page.get_image_info(xrefs=True)
+            for c_idx, cell in enumerate(cells):
+                raw_cell_text = page.get_text("text", clip=cell)
+                parsed = parse_voter_cell_text(raw_cell_text, page_no)
+
+                sno_val = parsed["serial_no"]
+                rec_id = int(sno_val) if sno_val.isdigit() else (c_idx + 1)
+
+                photo_meta = match_and_extract_voter_photo(
+                    doc, page, cell, page_no, sno_val, parsed["voter_id"], doc_id, img_infos
+                )
+
+                rec_dict = {
+                    "record_id": rec_id,
+                    "page": page_no,
+                    "serial_no": sno_val,
+                    "electoral_roll_no": parsed["electoral_roll_no"],
+                    "voter_name": parsed["voter_name"],
+                    "relation_type": parsed["relation_type"],
+                    "relation_name": parsed["relation_name"],
+                    "house_no": parsed["house_no"],
+                    "age": parsed["age"],
+                    "gender": parsed["gender"],
+                    "voter_id": parsed["voter_id"],
+                    "block_bbox": f"[{cell.x0:.1f},{cell.y0:.1f},{cell.x1:.1f},{cell.y1:.1f}]",
+                    "photo_bbox": f"[{photo_meta['photo_bbox'][0]:.1f},{photo_meta['photo_bbox'][1]:.1f},{photo_meta['photo_bbox'][2]:.1f},{photo_meta['photo_bbox'][3]:.1f}]" if photo_meta.get("photo_bbox") else None,
+                    "photo_path": photo_meta.get("photo_path"),
+                    "image_matching_status": photo_meta.get("status", "MISSING"),
+                    "title": f"ఓటరు రికార్డు {sno_val} (పుట {page_no})",
+                    "fields": parsed["fields"]
+                }
+                records.append(rec_dict)
+
+    if not records and any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు"]):
+        records = parse_voter_blocks(text, page_no)
+
+    return records
+
+
+def extract_single_page_data(doc, page_no: int, doc_id: str, ollama_url=None, model_name=None, use_ai=False):
+    """
+    Extract text, tables, paragraphs, and structured records for a single page.
+    Handles exceptions per-page so failure on one page does not block others.
+    """
+    try:
+        p_idx = page_no - 1
+        if p_idx < 0 or p_idx >= len(doc):
+            return {
+                "page_number": page_no,
+                "status": "failed",
+                "error": f"Page index {page_no} out of bounds",
+                "records": [],
+                "voter_count": 0
+            }
+
+        page = doc[p_idx]
+        embedded = page.get_text("text") or ""
+        method = "Embedded PDF text"
+        text = clean(embedded)
+
+        if len(text) < 35:
+            # Scanned page fallback
+            try:
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                ocr_text = clean(ocr(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")))
+                if ocr_text:
+                    text = ocr_text
+                    method = "Telugu + English OCR"
+                else:
+                    text = f"[పేజీ {page_no}: స్కాన్ చేసిన చిత్రం లేదా గ్రాఫిక్స్]"
+                    method = "Graphics / Image"
+            except Exception as ocr_err:
+                text = f"[పేజీ {page_no}: OCR లోపం - {ocr_err}]"
+                method = "OCR Error"
+
+        records = extract_single_page_records(doc, page_no, doc_id)
+        page_tables = []
+        page_paras = []
+
+        for p in paragraphs(text):
+            page_paras.append({
+                "Page": page_no,
+                "Heading (Telugu)": "",
+                "Heading (English)": "",
+                "Telugu paragraph": p,
+                "English translation": ""
+            })
+
+        return {
+            "page_number": page_no,
+            "status": "completed",
+            "method": method,
+            "text": text,
+            "records": records,
+            "tables": page_tables,
+            "paragraphs": page_paras,
+            "voter_count": len(records),
+            "error": None
+        }
+    except Exception as exc:
+        return {
+            "page_number": page_no,
+            "status": "failed",
+            "method": "Failed",
+            "text": "",
+            "records": [],
+            "tables": [],
+            "paragraphs": [],
+            "voter_count": 0,
+            "error": str(exc)
+        }
+
+
 def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None, doc_id=None):
     doc = fitz.open(stream=data, filetype="pdf")
     if doc.is_encrypted or not len(doc):

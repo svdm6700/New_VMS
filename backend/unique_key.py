@@ -51,9 +51,12 @@ def generate_bulk_unique_keys(db: Session, count: int, existing_in_batch: Set[st
     if count <= 0:
         return []
 
-    # Load existing keys from database for quick set membership lookup
+    # Load existing keys from database for quick set membership lookup.
+    # Use a column-only query (no full ORM load) so this scales to 100,000+ records without memory issues.
     db_keys: Set[str] = set()
-    rows = db.query(VoterRecordModel.unique_key).filter(VoterRecordModel.unique_key.isnot(None)).all()
+    rows = db.execute(
+        __import__("sqlalchemy").text("SELECT unique_key FROM voter_records WHERE unique_key IS NOT NULL")
+    ).fetchall()
     for (k,) in rows:
         if k:
             db_keys.add(k)

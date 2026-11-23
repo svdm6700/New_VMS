@@ -21,11 +21,14 @@ storage/temp/*
 storage/exports/*
 storage/photos/*
 storage/results/*
+storage/logs/*
 !storage/uploads/.gitkeep
 !storage/temp/.gitkeep
 !storage/exports/.gitkeep
 !storage/photos/.gitkeep
 !storage/results/.gitkeep
+!storage/logs/.gitkeep
+backend/scratch/
 
 # TypeScript build info
 *.tsbuildinfo

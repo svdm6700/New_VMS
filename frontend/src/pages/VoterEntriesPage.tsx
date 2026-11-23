@@ -639,12 +639,12 @@ export const VoterEntriesPage: React.FC = () => {
                     Active Verified
                   </span>
                   <Link
-                    to={`/my-wallet?voter_id=${selectedVoter.id}`}
+                    to={`/voter-verification?search=${selectedVoter.unique_key || selectedVoter.voter_id}`}
                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-bold shadow-xs transition-all"
-                    title="Disburse funds from your wallet to this voter"
+                    title="Verify this voter in the verification screen"
                   >
-                    <IndianRupee className="w-3.5 h-3.5" />
-                    <span>Spend from Wallet</span>
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Verify Voter</span>
                   </Link>
                   <button
                     type="button"
