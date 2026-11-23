@@ -4,7 +4,10 @@
  * Redacts sensitive fields (passwords, tokens).
  */
 
-import { API_BASE_URL } from './api';
+function getApiBaseUrl(): string {
+  const rawBase = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) || 'http://127.0.0.1:8000';
+  return String(rawBase).replace(/\/api\/?$/, '');
+}
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL';
 
@@ -44,7 +47,10 @@ function redactObject(obj: any): any {
 class LoggingService {
   private queue: FrontendLogPayload[] = [];
   private flushTimeout: any = null;
-  private readonly endpoint = `${API_BASE_URL}/api/logs/frontend`;
+
+  private get endpoint(): string {
+    return `${getApiBaseUrl()}/api/logs/frontend`;
+  }
 
   constructor() {
     this.setupGlobalHandlers();
@@ -128,7 +134,9 @@ class LoggingService {
     this.queue = [];
 
     try {
-      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+      const token = typeof localStorage !== 'undefined'
+        ? (localStorage.getItem('vms_auth_token') || localStorage.getItem('token') || localStorage.getItem('telugu_pdf_auth_token'))
+        : null;
       await fetch(this.endpoint, {
         method: 'POST',
         headers: {
