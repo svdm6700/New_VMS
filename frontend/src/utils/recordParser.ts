@@ -18,8 +18,22 @@ export function extractRecordsFromDocument(doc: DocumentResult | null): Extracte
   if (doc.pages && doc.pages.length > 0) {
     for (const p of doc.pages) {
       const pageNo = p.page || 1;
-      const text = p.text || '';
+      let text = (p.text || '').replace(/\xa0/g, ' ');
       if (!text.trim()) continue;
+
+      // Normalize broken Telugu words and labels across newlines
+      text = text
+        .replace(/స్\s*\n\s*త్రీ/g, 'స్త్రీ')
+        .replace(/గ్రా[ా-్]*\s*\n*\s*\.?\s*పం\.?\s*ఓ\.?\s*జా\.?\s*వ\.?\s*సం\.?/g, 'గ్రా.పం.ఓ.జా.వ.సం.')
+        .replace(/అ[ా-్]*\s*\n*\s*\.?\s*ఓ\.?\s*జా\.?\s*వ\.?\s*సం\.?/g, 'అ.ఓ.జా.వ.సం.')
+        .replace(/ఓటరు\s*\n*\s*పేరు\s*[:\.]?/g, 'ఓటరు పేరు:')
+        .replace(/తండ్రి[ిీ్\s]*\n*\s*(?:పేరు)?\s*[:\.]?/g, 'తండ్రి పేరు:')
+        .replace(/భర్త[్\s]*\n*\s*(?:పేరు)?\s*[:\.]?/g, 'భర్త పేరు:')
+        .replace(/తల్లి[్\s]*\n*\s*(?:పేరు)?\s*[:\.]?/g, 'తల్లి పేరు:')
+        .replace(/రక్షకుడు[్\s]*\n*\s*(?:పేరు)?\s*[:\.]?/g, 'రక్షకుడు పేరు:')
+        .replace(/ఇంటి\s*\n*\s*సంఖ్య\s*[:\.]?/g, 'ఇంటి సంఖ్య:')
+        .replace(/ఓటరు\s*ఐడి\.?\s*(?:కార్డు\s*నెం\.?)?\s*[:\.]?/g, 'ఓటరు ఐడి:')
+        .replace(/వయస్సు\s*\n*\s*[:\.]?/g, 'వయస్సు:');
 
       const blocks = text.split(/\n\s*\n/);
       for (const block of blocks) {

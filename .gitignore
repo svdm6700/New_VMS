@@ -43,6 +43,7 @@ backend/data/*.db
 # OS Files
 .DS_Store
 Thumbs.db
+*.zip
 
 # Test & coverage artifacts
 .coverage

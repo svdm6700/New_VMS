@@ -377,16 +377,17 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
       {/* Controls Card */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-xs space-y-4">
         {/* Top Row: Title, Records Badge & Exports */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="p-1.5 bg-brand-50 dark:bg-brand-950 text-brand-600 dark:text-brand-400 rounded-xl">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <span className="p-2 bg-gradient-to-br from-brand-50 to-indigo-50 dark:from-brand-950/60 dark:to-indigo-950/60 text-brand-600 dark:text-brand-400 rounded-xl border border-brand-100/60 dark:border-brand-900/60 shadow-2xs">
                 <TableProperties className="w-4 h-4" />
               </span>
-              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-telugu">
+              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-telugu tracking-tight">
                 ఓటర్ల జాబితా డేటాబేస్ రికార్డులు (Voter Records Database)
               </h2>
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800/80 shadow-2xs">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 {totalRecords.toLocaleString()} Records
               </span>
             </div>
@@ -396,12 +397,12 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
           </div>
 
           {/* Action Toolbar - Single Clean Row */}
-          <div className="flex items-center gap-2 shrink-0 self-start md:self-auto">
+          <div className="flex items-center gap-2 shrink-0 self-start md:self-auto flex-wrap sm:flex-nowrap">
             {/* Complete Voter List PDF */}
             <button
               onClick={handleGenerateCompletePdf}
               disabled={pdfLoading}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-black dark:bg-slate-800 dark:hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs"
+              className="whitespace-nowrap flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-black dark:bg-slate-800 dark:hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs hover:shadow-slate-900/10 active:scale-95"
               title="Generate complete A4 PDF for all filtered voter records (27 voters per page)"
             >
               <Printer className="w-3.5 h-3.5 text-indigo-400" />
@@ -413,7 +414,7 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
               <button
                 onClick={handleGenerateSelectedPdf}
                 disabled={pdfLoading}
-                className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs shadow-indigo-500/20 animate-in fade-in"
+                className="whitespace-nowrap flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs shadow-indigo-500/20 active:scale-95 animate-in fade-in"
                 title="Generate print-ready A4 PDF for selected voters"
               >
                 <FileText className="w-3.5 h-3.5" />
@@ -426,7 +427,7 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
               <button
                 type="button"
                 onClick={() => setIsExportMenuOpen((prev) => !prev)}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/60 rounded-xl text-xs font-bold transition-all"
+                className="whitespace-nowrap flex items-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100/80 dark:bg-emerald-950/50 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800/80 rounded-xl text-xs font-bold transition-all shadow-2xs active:scale-95"
                 title="Export or copy data in various formats"
               >
                 <Download className="w-3.5 h-3.5 text-emerald-600" />
@@ -454,9 +455,9 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
                       setIsExportMenuOpen(false);
                       handleExportCsv();
                     }}
-                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-blue-950/50 hover:text-blue-700 dark:hover:text-blue-300 flex items-center gap-2.5 transition-colors"
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 flex items-center gap-2.5 transition-colors"
                   >
-                    <FileText className="w-4 h-4 text-blue-600" />
+                    <FileText className="w-4 h-4 text-sky-600" />
                     <span>Export CSV (.csv)</span>
                   </button>
 
@@ -480,7 +481,7 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
             {/* Quick Print Button */}
             <button
               onClick={() => window.print()}
-              className="p-2 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              className="p-2 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors active:scale-95"
               title="Print Current Table View"
             >
               <Printer className="w-3.5 h-3.5" />

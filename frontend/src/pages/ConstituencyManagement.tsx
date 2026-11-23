@@ -462,15 +462,15 @@ export const ConstituencyManagement: React.FC = () => {
   return (
     <div className="space-y-6 animate-in fade-in">
       {/* Unified Master Header Banner */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-3xl p-6 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-3xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-5">
         <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-cyan-50 dark:bg-cyan-950/60 border border-cyan-100 dark:border-cyan-900/50 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0 shadow-xs">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-500/10 via-brand-500/10 to-indigo-500/10 dark:from-cyan-500/20 dark:to-indigo-500/20 border border-cyan-200/50 dark:border-cyan-800/50 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0 shadow-xs">
             <Building2 className="w-6 h-6" />
           </div>
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span
-                className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+                className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 uppercase tracking-wider ${
                   isSuperAdmin
                     ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800/60'
                     : 'bg-brand-50 text-brand-600 dark:bg-brand-950/40 dark:text-brand-400 border border-brand-200/60 dark:border-brand-900/60'
@@ -489,14 +489,14 @@ export const ConstituencyManagement: React.FC = () => {
           </div>
         </div>
 
-        {/* Global Contextual Action Buttons - Single Sleek Horizontal Row */}
-        <div className="flex items-center gap-2 shrink-0 self-start lg:self-auto">
+        {/* Global Contextual Action Buttons - Single Sleek Horizontal Toolbar */}
+        <div className="flex items-center gap-2 shrink-0 self-start md:self-auto flex-wrap sm:flex-nowrap">
           {/* Refresh Button */}
           <button
             onClick={fetchData}
             title="Refresh Geographic and Assignment Data"
             disabled={isLoading}
-            className="p-2.5 text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-all"
+            className="p-2.5 text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-all active:scale-95"
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </button>
@@ -515,7 +515,7 @@ export const ConstituencyManagement: React.FC = () => {
                 });
                 setShowAssignModal(true);
               }}
-              className="px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm shadow-brand-500/20 transition-all"
+              className="whitespace-nowrap px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm shadow-purple-500/20 transition-all active:scale-95"
             >
               <UserCheck className="w-4 h-4" />
               <span>New Assignment</span>
@@ -530,7 +530,7 @@ export const ConstituencyManagement: React.FC = () => {
                   setDistrictForm({ name: '', code: '', state: 'Andhra Pradesh' });
                   setShowDistrictModal(true);
                 }}
-                className="px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
+                className="whitespace-nowrap px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Add District</span>
@@ -545,7 +545,7 @@ export const ConstituencyManagement: React.FC = () => {
                   });
                   setShowConstituencyModal(true);
                 }}
-                className="px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-brand-500/20 transition-all"
+                className="whitespace-nowrap px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-brand-500/20 transition-all active:scale-95"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Add Constituency</span>
@@ -566,7 +566,7 @@ export const ConstituencyManagement: React.FC = () => {
                 });
                 setShowWardModal(true);
               }}
-              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-indigo-500/20 transition-all"
+              className="whitespace-nowrap px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-indigo-500/20 transition-all active:scale-95"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Add Ward</span>

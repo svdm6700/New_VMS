@@ -167,12 +167,25 @@ def parse_voter_cell_text(raw_text, page_no=1):
     """Accurately parse all structured fields from a voter block text."""
     text = (raw_text or "").replace("\xa0", " ").strip()
     
+    # 1. Normalize line wraps inside words and labels
+    text = re.sub(r'స్\s*\n\s*త్రీ', 'స్త్రీ', text)
+    text = re.sub(r'గ్రా[ా-్]*\s*\n*\s*\.?\s*పం\.?\s*ఓ\.?\s*జా\.?\s*వ\.?\s*సం\.?', 'గ్రా.పం.ఓ.జా.వ.సం.', text)
+    text = re.sub(r'అ[ా-్]*\s*\n*\s*\.?\s*ఓ\.?\s*జా\.?\s*వ\.?\s*సం\.?', 'అ.ఓ.జా.వ.సం.', text)
+    text = re.sub(r'ఓటరు\s*\n*\s*పేరు\s*[:\.]?', 'ఓటరు పేరు:', text)
+    text = re.sub(r'తండ్రి[ిీ్\s]*\n*\s*(?:పేరు)?\s*[:\.]?', 'తండ్రి పేరు:', text)
+    text = re.sub(r'భర్త[్\s]*\n*\s*(?:పేరు)?\s*[:\.]?', 'భర్త పేరు:', text)
+    text = re.sub(r'తల్లి[్\s]*\n*\s*(?:పేరు)?\s*[:\.]?', 'తల్లి పేరు:', text)
+    text = re.sub(r'రక్షకుడు[్\s]*\n*\s*(?:పేరు)?\s*[:\.]?', 'రక్షకుడు పేరు:', text)
+    text = re.sub(r'ఇంటి\s*\n*\s*సంఖ్య\s*[:\.]?', 'ఇంటి సంఖ్య:', text)
+    text = re.sub(r'ఓటరు\s*ఐడి\.?\s*(?:కార్డు\s*నెం\.?)?\s*[:\.]?', 'ఓటరు ఐడి:', text)
+    text = re.sub(r'వయస్సు\s*\n*\s*[:\.]?', 'వయస్సు:', text)
+
     # 1. Serial Number
-    m_sno = re.search(r'(?:వ\.సం|గ్రా\.పం\.ఓ\.జా\.వ\.సం|క్ర\.సం|వరుస సంఖ్య|Sl\.?\s*No|S\.No)\s*[:\.]?\s*(\d+)', text, re.IGNORECASE)
+    m_sno = re.search(r'(?:గ్రా\.పం\.ఓ\.జా\.వ\.సం\.|వ\.సం|క్ర\.సం|వరుస సంఖ్య|Sl\.?\s*No|S\.No)\s*[:\.]?\s*(\d+)', text, re.IGNORECASE)
     serial_no = m_sno.group(1).strip() if m_sno else "Not Available"
     
     # 2. Roll No
-    m_roll = re.search(r'(?:అ\.ఓ\.జా\.వ\.సం|రోల్\s*సంఖ్య|Roll\s*No)\s*[:\.]?\s*([A-Za-z0-9\s\-\/]+)', text)
+    m_roll = re.search(r'(?:అ\.ఓ\.జా\.వ\.సం\.|రోల్\s*సంఖ్య|Roll\s*No)\s*[:\.]?\s*([A-Za-z0-9\s\-\/]+?)(?=\n|ఓటరు|పేరు|$)', text)
     roll = m_roll.group(1).strip() if m_roll else "Not Available"
     
     # 3. EPIC Number (Voter ID)
@@ -194,45 +207,44 @@ def parse_voter_cell_text(raw_text, page_no=1):
                 break
     
     # 4. Voter Name
-    m_name = re.search(r'(?:పేరు|ఓటరు పేరు|Name)\s*[:\.]?\s*([^\n\r]+)', text)
-    voter_name = m_name.group(1).strip() if m_name else "Not Available"
-    voter_name = re.split(r'(?:భర్త|తండ్రి|తల్లి|ఇంటి|వయస్సు)', voter_name)[0].strip()
+    m_name = re.search(r'ఓటరు\s*పేరు\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:తండ్రి|భర్త|తల్లి|రక్షకుడు|ఇంటి సంఖ్య|$))', text)
+    if not m_name:
+        m_name = re.search(r'(?:^|\n)\s*పేరు\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:తండ్రి|భర్త|తల్లి|రక్షకుడు|ఇంటి సంఖ్య|$))', text)
+    if not m_name:
+        m_name = re.search(r'(?:Name)\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:Father|Husband|Mother|House|Age|$))', text, re.IGNORECASE)
+    voter_name = " ".join(m_name.group(1).split()).strip() if m_name else "Not Available"
     
-    # 5. Relation (Father / Husband / Mother)
+    # 5. Relation (Father / Husband / Mother / Guardian)
     rel_type = "Not Available"
     rel_name = "Not Available"
-    m_father = re.search(r'(?:తండ్రి\s*పేరు|తండ్రి|Father\'?s?\s*Name)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
-    m_husband = re.search(r'(?:భర్త\s*పేరు|భర్త|Husband\'?s?\s*Name)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
-    m_mother = re.search(r'(?:తల్లి\s*పేరు|తల్లి|Mother\'?s?\s*Name)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
-    
-    if m_father:
-        rel_type = "తండ్రి"
-        rel_name = re.split(r'(?:ఇంటి|వయస్సు|లింగం|House)', m_father.group(1))[0].strip()
-    elif m_husband:
-        rel_type = "భర్త"
-        rel_name = re.split(r'(?:ఇంటి|వయస్సు|లింగం|House)', m_husband.group(1))[0].strip()
-    elif m_mother:
-        rel_type = "తల్లి"
-        rel_name = re.split(r'(?:ఇంటి|వయస్సు|లింగం|House)', m_mother.group(1))[0].strip()
+    m_rel = re.search(r'(తండ్రి|భర్త|తల్లి|రక్షకుడు)\s*(?:పేరు)?\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:ఇంటి సంఖ్య|ఓటరు ఐడి|గుర్తింపు కార్డు|వయస్సు|$))', text)
+    if not m_rel:
+        m_rel = re.search(r'(Father|Husband|Mother|Guardian)\'?s?\s*Name\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:House|EPIC|Age|$))', text, re.IGNORECASE)
+    if m_rel:
+        rel_type = m_rel.group(1).strip()
+        rel_name = " ".join(m_rel.group(2).split()).strip()
         
     # 6. House No
-    m_house = re.search(r'(?:ఇంటి\s*సంఖ్య|House\s*No)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
-    house_no = m_house.group(1).strip() if m_house else "Not Available"
-    house_no = re.split(r'(?:వయస్సు|లింగం|Age|Gender)', house_no)[0].strip()
+    m_house = re.search(r'ఇంటి\s*సంఖ్య\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:ఓటరు ఐడి|గుర్తింపు కార్డు|వయస్సు|లింగము|లింగం|Gender|$))', text)
+    if not m_house:
+        m_house = re.search(r'House\s*No\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:EPIC|Age|Gender|$))', text, re.IGNORECASE)
+    house_no = " ".join(m_house.group(1).split()).strip() if m_house else "Not Available"
     
     # 7. Age
     m_age = re.search(r'(?:వయస్సు|Age)\s*[:\.]?\s*(\d+)', text, re.IGNORECASE)
     age = m_age.group(1).strip() if m_age else "Not Available"
     
-    # 8. Gender
-    m_gen = re.search(r'(?:లింగం|లింగము|Gender)\s*[:\.]?\s*([^\n\r]+)', text, re.IGNORECASE)
+    # 8. Gender (strictly anchored to avoid matching 'లింగం' inside voter names)
+    m_gen = re.search(r'(?:^|\n|\d+\s+)(?:లింగము|లింగం|Gender)\s*[:\.\-]?\s*([^\n\r]+)', text)
     gender = "Not Available"
     if m_gen:
         raw_gen = m_gen.group(1).strip()
-        if any(w in raw_gen for w in ["స్త్రీ", "స్త్రీి", "Female", "F"]):
+        if any(w in raw_gen for w in ["స్త్రీ", "స్", "Female", "F"]):
             gender = "స్త్రీ"
         elif any(w in raw_gen for w in ["పురుషుడు", "పు", "Male", "M"]):
             gender = "పురుషుడు"
+        elif any(w in raw_gen for w in ["ఇతర", "Third", "Transgender", "T", "O"]):
+            gender = "ఇతర"
         else:
             gender = raw_gen
             
@@ -431,7 +443,7 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
             page_no = p_idx + 1
             text = page.get_text("text") or ""
             
-            is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య"])
+            is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య", "Sl.No", "S.No", "EPIC", "Voter", "voter"])
             if is_voter_page:
                 cells = detect_voter_cells(page)
                 if cells:
@@ -529,9 +541,14 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
                     fields.insert(0, {"field_name": "వరుస సంఖ్య", "value": first_num})
                     
             if fields:
+                s_val = next((f["value"] for f in fields if any(k in f["field_name"] for k in ["సంఖ్య", "సం", "Sl", "S.No"])), str(rec_counter))
+                v_val = next((f["value"] for f in fields if any(k in f["field_name"] for k in ["కార్డు", "గుర్తింపు", "ఐడి", "EPIC", "ID"])), "Not Available")
                 records.append({
                     "record_id": rec_counter,
                     "page": page_no,
+                    "serial_no": s_val,
+                    "voter_id": v_val,
+                    "image_matching_status": "MISSING",
                     "title": f"రికార్డు {rec_counter} (పేజీ {page_no})",
                     "fields": fields
                 })
@@ -548,6 +565,9 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
                 records.append({
                     "record_id": rec_counter,
                     "page": page_no,
+                    "serial_no": str(rec_counter),
+                    "voter_id": "Not Available",
+                    "image_matching_status": "MISSING",
                     "title": f"టేబుల్ రికార్డు {rec_counter} (పేజీ {page_no})",
                     "fields": fields
                 })
@@ -599,7 +619,7 @@ def process_pdf(data, filename, ollama_url=None, model_name=None, use_ai=None, d
                 method = "Embedded PDF text"
                 text_pages += 1
 
-                is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము"])
+                is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "Sl.No", "S.No", "EPIC", "Voter", "voter"])
 
                 if not is_voter_page:
                     if pdf_plumber_doc is None:
