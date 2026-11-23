@@ -81,40 +81,45 @@ def generate_voters_a4_pdf(voters: List[Any], title_header: Optional[str] = None
     doc = pymupdf.open()
     total_voters = len(voters)
     total_pages = (total_voters + VOTERS_PER_PAGE - 1) // VOTERS_PER_PAGE
+    doc_cache = {}
 
-    for page_idx in range(total_pages):
-        page = doc.new_page(width=A4_WIDTH, height=A4_HEIGHT)
+    try:
+        for page_idx in range(total_pages):
+            page = doc.new_page(width=A4_WIDTH, height=A4_HEIGHT)
 
-        # Register Unicode Telugu Fonts
-        page.insert_font(fontname="Nirmala", fontfile=str(REGULAR_FONT_PATH))
-        page.insert_font(fontname="NirmalaB", fontfile=str(BOLD_FONT_PATH))
+            # Register Unicode Telugu Fonts
+            page.insert_font(fontname="Nirmala", fontfile=str(REGULAR_FONT_PATH))
+            page.insert_font(fontname="NirmalaB", fontfile=str(BOLD_FONT_PATH))
 
-        start_voter_idx = page_idx * VOTERS_PER_PAGE
-        end_voter_idx = min(start_voter_idx + VOTERS_PER_PAGE, total_voters)
-        page_voters = voters[start_voter_idx:end_voter_idx]
+            start_voter_idx = page_idx * VOTERS_PER_PAGE
+            end_voter_idx = min(start_voter_idx + VOTERS_PER_PAGE, total_voters)
+            page_voters = voters[start_voter_idx:end_voter_idx]
 
-        for cell_idx, v in enumerate(page_voters):
-            col = cell_idx % COLS
-            row = cell_idx // COLS
+            for cell_idx, v in enumerate(page_voters):
+                col = cell_idx % COLS
+                row = cell_idx // COLS
 
-            x0 = LEFT_MARGIN + col * (COL_WIDTH + COL_GAP)
-            y0 = TOP_MARGIN + row * (BOX_HEIGHT + ROW_GAP)
-            x1 = x0 + COL_WIDTH
-            y1 = y0 + BOX_HEIGHT
+                x0 = LEFT_MARGIN + col * (COL_WIDTH + COL_GAP)
+                y0 = TOP_MARGIN + row * (BOX_HEIGHT + ROW_GAP)
+                x1 = x0 + COL_WIDTH
+                y1 = y0 + BOX_HEIGHT
 
-            # Extract voter field values (handles SQLAlchemy model or dict)
-            serial_no = getattr(v, "serial_no", None) or (v.get("serial_no") if isinstance(v, dict) else "") or str(start_voter_idx + cell_idx + 1)
-            electoral_roll_no = getattr(v, "electoral_roll_no", None) or (v.get("electoral_roll_no") if isinstance(v, dict) else "")
-            voter_name = getattr(v, "voter_name", None) or (v.get("voter_name") if isinstance(v, dict) else "") or "Not Available"
-            relation_type = getattr(v, "relation_type", None) or (v.get("relation_type") if isinstance(v, dict) else "") or "సంబంధం"
-            relation_name = getattr(v, "relation_name", None) or (v.get("relation_name") if isinstance(v, dict) else "") or "Not Available"
-            age = getattr(v, "age", None) or (v.get("age") if isinstance(v, dict) else "") or "-"
-            gender = getattr(v, "gender", None) or (v.get("gender") if isinstance(v, dict) else "") or "-"
-            house_no = getattr(v, "house_no", None) or (v.get("house_no") if isinstance(v, dict) else "") or "-"
-            epic_id = getattr(v, "voter_id", None) or (v.get("voter_id") if isinstance(v, dict) else "") or ""
-            unique_key = getattr(v, "unique_key", None) or (v.get("unique_key") if isinstance(v, dict) else "") or "A7K2P"
-            document_id = getattr(v, "document_id", None) or (v.get("document_id") if isinstance(v, dict) else None)
-            source_page = getattr(v, "source_page", None) or (v.get("source_page") if isinstance(v, dict) else None)
+                # Extract voter field values (handles SQLAlchemy model or dict)
+                serial_no = getattr(v, "serial_no", None) or (v.get("serial_no") if isinstance(v, dict) else "") or str(start_voter_idx + cell_idx + 1)
+                electoral_roll_no = getattr(v, "electoral_roll_no", None) or (v.get("electoral_roll_no") if isinstance(v, dict) else "")
+                voter_name = getattr(v, "voter_name", None) or (v.get("voter_name") if isinstance(v, dict) else "") or "Not Available"
+                relation_type = getattr(v, "relation_type", None) or (v.get("relation_type") if isinstance(v, dict) else "") or "సంబంధం"
+                relation_name = getattr(v, "relation_name", None) or (v.get("relation_name") if isinstance(v, dict) else "") or "Not Available"
+                age = getattr(v, "age", None) or (v.get("age") if isinstance(v, dict) else "") or "-"
+                gender = getattr(v, "gender", None) or (v.get("gender") if isinstance(v, dict) else "") or "-"
+                house_no = getattr(v, "house_no", None) or (v.get("house_no") if isinstance(v, dict) else "") or "-"
+                epic_id = getattr(v, "voter_id", None) or (v.get("voter_id") if isinstance(v, dict) else "") or ""
+                unique_key = getattr(v, "unique_key", None) or (v.get("unique_key") if isinstance(v, dict) else "") or "A7K2P"
+                document_id = getattr(v, "document_id", None) or (v.get("document_id") if isinstance(v, dict) else None)
+                source_page = getattr(v, "source_page", None) or (v.get("source_page") if isinstance(v, dict) else None)
+                photo_path_val = getattr(v, "photo_path", None) or (v.get("photo_path") if isinstance(v, dict) else None)
+                block_bbox = getattr(v, "block_bbox", None) or (v.get("block_bbox") if isinstance(v, dict) else None)
+                photo_bbox = getattr(v, "photo_bbox", None) or (v.get("photo_bbox") if isinstance(v, dict) else None)
 
             # -------------------------------------------------------------
             # 1. Outer Voter Box Border
@@ -179,7 +184,12 @@ def generate_voters_a4_pdf(voters: List[Any], title_header: Optional[str] = None
                 voter_id=epic_id,
                 document_id=document_id,
                 source_page=source_page,
-                voter_idx_on_page=cell_idx
+                serial_no=serial_no,
+                photo_path=photo_path_val,
+                block_bbox=block_bbox,
+                photo_bbox=photo_bbox,
+                voter_idx_on_page=cell_idx,
+                doc_cache=doc_cache
             )
 
             photo_inserted = False
@@ -200,6 +210,12 @@ def generate_voters_a4_pdf(voters: List[Any], title_header: Optional[str] = None
         footer_text = f"పుట {page_idx + 1} / {total_pages}"
         page.insert_text((A4_WIDTH / 2.0 - 18, A4_HEIGHT - 16), footer_text, fontname="Nirmala", fontsize=7.0, color=(0.40, 0.40, 0.40))
 
-    pdf_bytes = doc.tobytes()
-    doc.close()
-    return pdf_bytes
+        pdf_bytes = doc.tobytes()
+        doc.close()
+        return pdf_bytes
+    finally:
+        for cached_doc in doc_cache.values():
+            try:
+                cached_doc.close()
+            except Exception:
+                pass

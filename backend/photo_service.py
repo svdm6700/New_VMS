@@ -47,16 +47,28 @@ def get_voter_photo_path(
     photo_path: Optional[str] = None,
     block_bbox: Optional[Union[str, List[float]]] = None,
     photo_bbox: Optional[Union[str, List[float]]] = None,
-    voter_idx_on_page: Optional[int] = None # Deprecated legacy parameter kept for signature compatibility
+    voter_idx_on_page: Optional[int] = None, # Deprecated legacy parameter kept for signature compatibility
+    doc_cache: Optional[dict] = None
 ) -> Optional[str]:
     """
     Returns the absolute path to a voter's photo file if available, or None.
     Uses spatial bounding box containment and persistent disk references.
     NEVER relies on sequential extraction index.
     """
-    # 1. Direct photo_path if provided and exists
-    if photo_path and os.path.exists(photo_path) and os.path.getsize(photo_path) > 0:
-        return str(Path(photo_path).resolve())
+    # 1. Direct photo_path if provided and exists (checks absolute and relative to storage)
+    if photo_path:
+        p = Path(photo_path)
+        if p.exists() and p.is_file() and p.stat().st_size > 0:
+            return str(p.resolve())
+        alt_p = STORAGE_BASE / photo_path
+        if alt_p.exists() and alt_p.is_file() and alt_p.stat().st_size > 0:
+            return str(alt_p.resolve())
+        # Check by filename inside PHOTOS_DIR
+        base_name = p.name
+        if base_name:
+            photo_file = PHOTOS_DIR / base_name
+            if photo_file.exists() and photo_file.stat().st_size > 0:
+                return str(photo_file.resolve())
 
     # 2. Check by unique_key (e.g. 5-character permanent code)
     if unique_key:
@@ -73,15 +85,31 @@ def get_voter_photo_path(
     # 4. Check standard naming: {document_id}_p{source_page}_s{serial_no}_{voter_id}.jpg
     if document_id and source_page is not None and serial_no:
         vid_slug = voter_id if voter_id and voter_id != "Not Available" else "no_epic"
-        candidate = PHOTOS_DIR / f"{document_id}_p{source_page}_s{serial_no}_{vid_slug}.jpg"
-        if candidate.exists() and candidate.stat().st_size > 0:
-            return str(candidate.resolve())
+        raw_s = str(serial_no).strip()
+        clean_s = raw_s.lstrip("0") or "0"
+        candidates_to_try = [raw_s]
+        if clean_s != raw_s:
+            candidates_to_try.append(clean_s)
+
+        for s_cand in candidates_to_try:
+            cand = PHOTOS_DIR / f"{document_id}_p{source_page}_s{s_cand}_{vid_slug}.jpg"
+            if cand.exists() and cand.stat().st_size > 0:
+                return str(cand.resolve())
+            cand_no_epic = PHOTOS_DIR / f"{document_id}_p{source_page}_s{s_cand}_no_epic.jpg"
+            if cand_no_epic.exists() and cand_no_epic.stat().st_size > 0:
+                return str(cand_no_epic.resolve())
+
+        # Fast glob in PHOTOS_DIR for any photo matching document, page, and serial number
+        for s_cand in candidates_to_try:
+            matched_files = list(PHOTOS_DIR.glob(f"{document_id}_p{source_page}_s{s_cand}_*.jpg"))
+            for mf in matched_files:
+                if mf.is_file() and mf.stat().st_size > 0:
+                    return str(mf.resolve())
 
     # 5. Dynamic fallback: If source document exists and page info is available
     if document_id and source_page is not None:
         doc_pdf = UPLOADS_DIR / f"{document_id}.pdf"
         if not doc_pdf.exists():
-            # Check root storage or data
             alt = STORAGE_BASE / f"{document_id}.pdf"
             if alt.exists():
                 doc_pdf = alt
@@ -89,7 +117,14 @@ def get_voter_photo_path(
         if doc_pdf.exists():
             try:
                 import pymupdf as fitz
-                src_doc = fitz.open(str(doc_pdf))
+                pdf_key = str(doc_pdf.resolve())
+                if doc_cache is not None and pdf_key in doc_cache:
+                    src_doc = doc_cache[pdf_key]
+                else:
+                    src_doc = fitz.open(pdf_key)
+                    if doc_cache is not None:
+                        doc_cache[pdf_key] = src_doc
+
                 pno = max(0, source_page - 1)
                 if pno < len(src_doc):
                     page = src_doc[pno]
@@ -139,7 +174,8 @@ def get_voter_photo_path(
                             cached_file = PHOTOS_DIR / f"{save_name}.jpg"
                             with open(cached_file, "wb") as f:
                                 f.write(extracted["image"])
-                            src_doc.close()
+                            if doc_cache is None:
+                                src_doc.close()
                             return str(cached_file.resolve())
                             
                     # If target_rect was available but no embedded image xref matched, render high-res clip
@@ -148,10 +184,12 @@ def get_voter_photo_path(
                         save_name = unique_key or f"{document_id}_p{source_page}_s{serial_no or '0'}_{voter_id or 'clip'}"
                         cached_file = PHOTOS_DIR / f"{save_name}.jpg"
                         pix.save(str(cached_file))
-                        src_doc.close()
+                        if doc_cache is None:
+                            src_doc.close()
                         return str(cached_file.resolve())
                         
-                src_doc.close()
+                if doc_cache is None:
+                    src_doc.close()
             except Exception:
                 pass
 
