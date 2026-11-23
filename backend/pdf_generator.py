@@ -340,12 +340,12 @@ def generate_voters_a4_pdf(
                 def fit_line(txt: str) -> str:
                     if not REGULAR_FONT:
                         return txt[:32]
-                    if REGULAR_FONT.text_length(txt, fontsize=6.1) <= max_w:
+                    cur_len = REGULAR_FONT.text_length(txt, fontsize=6.1)
+                    if cur_len <= max_w:
                         return txt
-                    cur = txt
-                    while len(cur) > 5 and REGULAR_FONT.text_length(cur + "..", fontsize=6.1) > max_w:
-                        cur = cur[:-1]
-                    return cur + ".."
+                    ratio = max_w / max(1.0, cur_len)
+                    target_chars = max(6, int(len(txt) * ratio) - 2)
+                    return txt[:target_chars] + ".."
 
                 # Line 1: ఓటరు పేరు : {name}
                 tw_main.append((x0 + 2.5, y0 + 21.0), fit_line(f"ఓటరు పేరు : {voter_name}"), font=REGULAR_FONT, fontsize=6.1)

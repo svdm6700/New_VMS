@@ -33,7 +33,7 @@ from fastapi import (
     status
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc, text, func, case, and_
@@ -2222,8 +2222,8 @@ def generate_individual_voter_pdf(
 
     uk = voter.unique_key or "voter"
     pdf_bytes = generate_voters_a4_pdf([voter], title=f"ఓటరు వివరాలు - {voter.voter_name or ''} ({uk})")
-    return StreamingResponse(
-        BytesIO(pdf_bytes),
+    return Response(
+        content=pdf_bytes,
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'inline; filename="voter_{uk}.pdf"',
@@ -2274,8 +2274,8 @@ def generate_selected_voters_pdf(
         _check_voter_geographic_scope(voter, current_user, db)
 
     pdf_bytes = generate_voters_a4_pdf(voters, title=f"ఎంపిక చేసిన ఓటర్ల జాబితా ({len(voters)} రికార్డులు)")
-    return StreamingResponse(
-        BytesIO(pdf_bytes),
+    return Response(
+        content=pdf_bytes,
         media_type="application/pdf",
         headers={
             "Content-Disposition": 'inline; filename="voter_list_selected.pdf"',
@@ -2432,8 +2432,8 @@ def generate_filtered_voter_list_pdf(
         panchayat=panchayat_val,
         mandal=mandal_val
     )
-    return StreamingResponse(
-        BytesIO(pdf_bytes),
+    return Response(
+        content=pdf_bytes,
         media_type="application/pdf",
         headers={
             "Content-Disposition": 'inline; filename="voter_list.pdf"',
