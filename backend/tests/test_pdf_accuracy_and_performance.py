@@ -377,3 +377,135 @@ def test_api_generate_individual_pdf_endpoint(client):
     # Test invalid voter ID returns 404
     resp_invalid = client.get("/api/voters/999999999/pdf")
     assert resp_invalid.status_code == 404
+
+
+# =========================================================================
+# 8. Ward Serial Number ('వార్డు.ఓ.జా.వ.సం.') Treatment & Page-Wise PDF Tests
+# =========================================================================
+def test_ward_serial_number_treatment_in_pdf():
+    """
+    Verify that 'వార్డు.ఓ.జా.వ.సం.' is treated strictly as a serial number in PDF generation,
+    and rendered with the ward label and serial number in the voter block header.
+    """
+    voter = {
+        "serial_no": "142",
+        "electoral_roll_no": "62 - 148 - 680",
+        "voter_name": "అపర్ణ పేధాద",
+        "relation_type": "భర్త",
+        "relation_name": "పెదడ మోశే",
+        "age": "26",
+        "gender": "స్త్రీ",
+        "house_no": "1-1",
+        "voter_id": "SJC1101658",
+        "unique_key": "W9R2P",
+        "fields": [
+            {"field_name": "వార్డు.ఓ.జా.వ.సం.", "value": "142"},
+            {"field_name": "అ.ఓ.జా.వ.సం.", "value": "62 - 148 - 680"}
+        ]
+    }
+
+    pdf_bytes = generate_voters_a4_pdf([voter], ward="20", panchayat="తాడేపల్లిగూడెం")
+    assert pdf_bytes[:5] == b"%PDF-"
+
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    assert len(doc) == 1
+    page_text = doc[0].get_text("text")
+
+    # Verify serial number and ward label appear in the generated PDF
+    assert "142" in page_text
+    assert "వార్డు.ఓ.జా.వ.సం." in page_text
+    assert "SJC1101658" in page_text
+    assert "అపర్ణ పేధాద" in page_text
+    assert "పెదడ మోశే" in page_text
+    # Ensure no photo artifact text in relation name
+    assert "Photo Available" not in page_text
+    doc.close()
+
+
+def test_page_wise_single_page_pdf_generation(sample_voters_100):
+    """
+    Verify generate_single_voter_pdf_page creates an isolated single page
+    with correct page metadata and footer numbering.
+    """
+    from backend.pdf_generator import generate_single_voter_pdf_page
+
+    chunk = sample_voters_100[:27]
+    pdf_bytes = generate_single_voter_pdf_page(
+        page_voters=chunk,
+        page_idx=2, # Page 3 (0-based 2)
+        total_pages=4,
+        start_voter_idx=54
+    )
+    assert pdf_bytes[:5] == b"%PDF-"
+
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    assert len(doc) == 1
+    page_text = doc[0].get_text("text")
+    assert "పుట సంఖ్య . 3/4" in page_text
+    doc.close()
+
+
+def test_assemble_pdf_from_pages(tmp_path, sample_voters_100):
+    """
+    Verify assemble_pdf_from_pages merges independent page files sequentially into a verified PDF.
+    """
+    from backend.pdf_generator import generate_single_voter_pdf_page, assemble_pdf_from_pages
+
+    page_files = []
+    for p_no in range(1, 4):
+        chunk = sample_voters_100[(p_no - 1) * 27 : p_no * 27]
+        p_bytes = generate_single_voter_pdf_page(
+            page_voters=chunk,
+            page_idx=p_no - 1,
+            total_pages=3,
+            start_voter_idx=(p_no - 1) * 27
+        )
+        p_path = tmp_path / f"temp_page_{p_no}.pdf"
+        p_path.write_bytes(p_bytes)
+        page_files.append(p_path)
+
+    out_file = tmp_path / "final_assembled.pdf"
+    res = assemble_pdf_from_pages(page_files, out_file)
+
+    assert res["page_count"] == 3
+    assert res["file_size"] > 1000
+    assert out_file.exists()
+
+    doc = pymupdf.open(str(out_file))
+    assert len(doc) == 3
+    assert "పుట సంఖ్య . 1/3" in doc[0].get_text("text")
+    assert "పుట సంఖ్య . 2/3" in doc[1].get_text("text")
+    assert "పుట సంఖ్య . 3/3" in doc[2].get_text("text")
+    doc.close()
+
+
+def test_api_pdf_page_endpoint(client):
+    """Test POST /api/voters/pdf/page returns HTTP 200 with a single A4 page."""
+    resp = client.post("/api/voters/pdf/page", json={"page_number": 1, "total_pages": 5})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content[:5] == b"%PDF-"
+
+    doc = pymupdf.open(stream=resp.content, filetype="pdf")
+    assert len(doc) == 1
+    doc.close()
+
+
+def test_api_pdf_export_jobs_lifecycle(client):
+    """Test POST /api/voters/pdf/export-jobs and GET status lifecycle."""
+    resp = client.post("/api/voters/pdf/export-jobs", json={"title": "Test Bulk Export Job"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "id" in data
+    job_id = data["id"]
+    assert data["status"] in ("pending", "processing", "completed")
+
+    # Check progress endpoint
+    prog_resp = client.get(f"/api/voters/pdf/export-jobs/{job_id}")
+    assert prog_resp.status_code == 200
+    prog_data = prog_resp.json()
+    assert prog_data["id"] == job_id
+    assert "completed_pages" in prog_data
+    assert "total_pages" in prog_data
+    assert "pages" in prog_data
+

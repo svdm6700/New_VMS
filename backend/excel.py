@@ -16,9 +16,12 @@ def map_records_to_voter_rows(records):
         page = r.get("page", 1)
         fields = {f.get("field_name", "").strip(): str(f.get("value", "")).strip() for f in r.get("fields", [])}
         
-        # 1. Serial No
+        # 1. Serial No (Treat వార్డు.ఓ.జా.వ.సం. / గ్రా.పం.ఓ.జా.వ.సం. strictly as serial number)
         serial_no = (
-            fields.get("గ్రా.పం.ఓ.జా.వ.సం.")
+            r.get("serial_no")
+            or fields.get("వార్డు.ఓ.జా.వ.సం.")
+            or fields.get("ార్డు.ఓ.జా.వ.సం.")
+            or fields.get("గ్రా.పం.ఓ.జా.వ.సం.")
             or fields.get("గ్రా.పం.ఓ.జా.వ.సం. (Serial No.)")
             or fields.get("వరుస సంఖ్య / ఐడి")
             or fields.get("వరుస సంఖ్య")

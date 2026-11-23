@@ -1,6 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, Printer, Download, FileText, RefreshCw, ExternalLink, AlertCircle } from 'lucide-react';
 
+interface PdfProgressInfo {
+  completed_pages: number;
+  total_pages: number;
+  failed_pages?: number;
+  percent?: number;
+}
+
 interface PdfPreviewModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -10,6 +17,8 @@ interface PdfPreviewModalProps {
   loading?: boolean;
   error?: string | null;
   onRetry?: () => void;
+  progress?: PdfProgressInfo | null;
+  onRetryFailedPages?: () => void;
 }
 
 export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
@@ -21,6 +30,8 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
   loading = false,
   error = null,
   onRetry,
+  progress = null,
+  onRetryFailedPages,
 }) => {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -139,14 +150,36 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
         {/* Modal Body / Iframe Viewer */}
         <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2 sm:p-4 overflow-hidden relative flex items-center justify-center">
           {loading ? (
-            <div className="flex flex-col items-center justify-center gap-3 text-slate-500">
-              <RefreshCw className="w-8 h-8 animate-spin text-brand-600" />
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                Generating A4 Voter List PDF...
-              </p>
-              <p className="text-xs text-slate-400">
-                Arranging 27 records per page, extracting voter photographs, and embedding permanent unique keys.
-              </p>
+            <div className="flex flex-col items-center justify-center gap-3 text-slate-500 max-w-md w-full px-4 text-center">
+              <RefreshCw className="w-9 h-9 animate-spin text-brand-600" />
+              <div>
+                <p className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                  {progress && progress.total_pages > 1
+                    ? `Page-Wise PDF Generation in Progress: Page ${Math.min(progress.total_pages, progress.completed_pages + 1)} of ${progress.total_pages}`
+                    : 'Generating A4 Voter List PDF...'}
+                </p>
+                <p className="text-xs text-slate-400 mt-1">
+                  Arranging 27 records per page, extracting voter photographs, and embedding permanent unique keys.
+                </p>
+              </div>
+
+              {progress && progress.total_pages > 0 && (
+                <div className="w-full bg-slate-200 dark:bg-slate-800 rounded-full h-2.5 overflow-hidden shadow-inner mt-2">
+                  <div
+                    className="bg-brand-600 h-2.5 rounded-full transition-all duration-300"
+                    style={{
+                      width: `${Math.min(100, Math.round((progress.completed_pages / progress.total_pages) * 100))}%`,
+                    }}
+                  />
+                </div>
+              )}
+
+              {progress && (
+                <div className="flex items-center justify-between w-full text-[11px] text-slate-500 font-medium px-1">
+                  <span>{progress.completed_pages} / {progress.total_pages} Pages Completed</span>
+                  <span>{Math.round((progress.completed_pages / progress.total_pages) * 100)}%</span>
+                </div>
+              )}
             </div>
           ) : error ? (
             <div className="max-w-md w-full bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900/60 rounded-3xl p-6 shadow-xl text-center flex flex-col items-center gap-4 animate-in fade-in">

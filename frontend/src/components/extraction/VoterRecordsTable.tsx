@@ -99,6 +99,13 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [pdfRetryAction, setPdfRetryAction] = useState<(() => void) | null>(null);
+  const [pdfProgress, setPdfProgress] = useState<{
+    completed_pages: number;
+    total_pages: number;
+    failed_pages?: number;
+    percent?: number;
+  } | null>(null);
+  const [currentPdfJobId, setCurrentPdfJobId] = useState<string | null>(null);
 
   // Export Dropdown State
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
@@ -267,6 +274,78 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
     }
   };
 
+  const handleGenerateCurrentPagePdf = async () => {
+    if (pdfLoading || records.length === 0) return;
+    setPdfTitle(`ఓటర్ల జాబితా A4 PDF - ప్రస్తుత పుట (${page})`);
+    setPdfFilename(`voter_list_page_${page}.pdf`);
+    setPdfBlob(null);
+    setPdfError(null);
+    setPdfProgress(null);
+    setPdfRetryAction(() => () => handleGenerateCurrentPagePdf());
+    setPdfLoading(true);
+    setIsPdfModalOpen(true);
+    try {
+      const recordIds = records.map((r) => r.id);
+      const blob = await documentService.getSinglePagePdf({
+        page_number: page,
+        total_pages: Math.max(1, Math.ceil(totalRecords / 27)),
+        document_id: selectedDocId || undefined,
+        voter_ids: recordIds,
+        panchayat: areaFilter !== 'all' ? areaFilter : undefined,
+        constituency: constituencyFilter !== 'all' ? constituencyFilter : undefined,
+        ward: wardFilter !== 'all' ? wardFilter : undefined,
+        district: districtFilter !== 'all' ? districtFilter : undefined,
+      });
+      setPdfBlob(blob);
+    } catch (err: any) {
+      setPdfError(err.message || 'Failed to generate current page PDF.');
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
+  const handleRetryFailedPdfPages = async () => {
+    if (!currentPdfJobId) return;
+    setPdfLoading(true);
+    setPdfError(null);
+    try {
+      await documentService.retryPdfJob(currentPdfJobId);
+      pollPdfProgress(currentPdfJobId);
+    } catch (err: any) {
+      setPdfError(err.message || 'Failed to retry PDF generation.');
+      setPdfLoading(false);
+    }
+  };
+
+  const pollPdfProgress = (jobId: string) => {
+    const checkStatus = async () => {
+      try {
+        const statusRes = await documentService.getPdfJobProgress(jobId);
+        setPdfProgress({
+          completed_pages: statusRes.completed_pages,
+          total_pages: statusRes.total_pages,
+          failed_pages: statusRes.failed_pages,
+          percent: statusRes.progress_percent,
+        });
+
+        if (statusRes.status === 'completed' || (statusRes.status === 'partial' && statusRes.completed_pages > 0)) {
+          const blob = await documentService.downloadPdfJobBlob(jobId);
+          setPdfBlob(blob);
+          setPdfLoading(false);
+        } else if (statusRes.status === 'failed') {
+          setPdfError(statusRes.error_message || 'Page-wise PDF export failed. Click Try Again to retry.');
+          setPdfLoading(false);
+        } else {
+          setTimeout(checkStatus, 1200);
+        }
+      } catch (pollErr: any) {
+        setPdfError(pollErr.message || 'Error tracking PDF generation progress.');
+        setPdfLoading(false);
+      }
+    };
+    setTimeout(checkStatus, 1000);
+  };
+
   const handleGenerateCompletePdf = async () => {
     if (pdfLoading) return;
     setPdfTitle(`సంపూర్ణ ఓటర్ల జాబితా A4 PDF (${totalRecords.toLocaleString()} ఓటర్లు)`);
@@ -274,24 +353,49 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
     setPdfFilename(`voter_list_${docPrefix}.pdf`);
     setPdfBlob(null);
     setPdfError(null);
+    setPdfProgress(null);
     setPdfRetryAction(() => () => handleGenerateCompletePdf());
     setPdfLoading(true);
     setIsPdfModalOpen(true);
-    try {
-      const blob = await documentService.getCompleteVoterListPdf({
-        district: districtFilter !== 'all' ? districtFilter : undefined,
-        constituency: constituencyFilter !== 'all' ? constituencyFilter : undefined,
-        area: areaFilter !== 'all' ? areaFilter : undefined,
-        ward_number: wardFilter !== 'all' ? wardFilter : undefined,
-        document_id: selectedDocId || undefined,
-        query: searchQuery.trim() || undefined,
-        gender: genderFilter !== 'all' ? genderFilter : undefined,
-      });
-      setPdfBlob(blob);
-    } catch (err: any) {
-      setPdfError(err.message || 'Failed to generate complete voter list PDF.');
-    } finally {
-      setPdfLoading(false);
+
+    const filterPayload = {
+      district: districtFilter !== 'all' ? districtFilter : undefined,
+      constituency: constituencyFilter !== 'all' ? constituencyFilter : undefined,
+      area: areaFilter !== 'all' ? areaFilter : undefined,
+      ward_number: wardFilter !== 'all' ? wardFilter : undefined,
+      document_id: selectedDocId || undefined,
+      query: searchQuery.trim() || undefined,
+      gender: genderFilter !== 'all' ? genderFilter : undefined,
+    };
+
+    // Use page-wise background processing for large datasets (> 54 voters)
+    if (totalRecords > 54) {
+      try {
+        const job = await documentService.startPdfExportJob({
+          title: `ఓటర్ల జాబితా (${totalRecords} ఓటర్లు)`,
+          ...filterPayload,
+        });
+        setCurrentPdfJobId(job.id);
+        setPdfProgress({
+          completed_pages: job.completed_pages || 0,
+          total_pages: job.total_pages || 1,
+          failed_pages: job.failed_pages || 0,
+          percent: job.progress_percent || 0,
+        });
+        pollPdfProgress(job.id);
+      } catch (err: any) {
+        setPdfError(err.message || 'Failed to start page-wise PDF generation.');
+        setPdfLoading(false);
+      }
+    } else {
+      try {
+        const blob = await documentService.getCompleteVoterListPdf(filterPayload);
+        setPdfBlob(blob);
+      } catch (err: any) {
+        setPdfError(err.message || 'Failed to generate complete voter list PDF.');
+      } finally {
+        setPdfLoading(false);
+      }
     }
   };
 
@@ -414,10 +518,21 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
               onClick={handleGenerateCompletePdf}
               disabled={pdfLoading}
               className="whitespace-nowrap flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-black dark:bg-slate-800 dark:hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs hover:shadow-slate-900/10 active:scale-95"
-              title="Generate complete A4 PDF for all filtered voter records (27 voters per page)"
+              title="Generate complete A4 PDF for all filtered voter records (27 voters per page, page-wise background processing)"
             >
               <Printer className="w-3.5 h-3.5 text-indigo-400" />
               <span>Complete PDF</span>
+            </button>
+
+            {/* Current Page PDF */}
+            <button
+              onClick={handleGenerateCurrentPagePdf}
+              disabled={pdfLoading || records.length === 0}
+              className="whitespace-nowrap flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold transition-all shadow-2xs active:scale-95"
+              title="Generate single-page PDF for current table page (27 voters)"
+            >
+              <FileText className="w-3.5 h-3.5 text-brand-600" />
+              <span>Current Page PDF</span>
             </button>
 
             {/* Selected Voters PDF Button - appears when items are selected */}
@@ -770,9 +885,10 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
                 </th>
                 <th
                   onClick={() => handleSort('serial_no')}
-                  className="px-3 py-3 cursor-pointer hover:bg-slate-100/60 dark:hover:bg-slate-700/50 w-24 whitespace-nowrap"
+                  className="px-3 py-3 cursor-pointer hover:bg-slate-100/60 dark:hover:bg-slate-700/50 w-28 whitespace-nowrap"
+                  title="వరుస సంఖ్య (Serial Number): గ్రా.పం.ఓ.జా.వ.సం. లేదా వార్డు.ఓ.జా.వ.సం."
                 >
-                  గ్రా.పం.ఓ.జా.వ.సం. {renderSortIcon('serial_no')}
+                  వ.సం / వార్డు.ఓ.జా.వ.సం. {renderSortIcon('serial_no')}
                 </th>
                 <th
                   onClick={() => handleSort('electoral_roll_no')}
@@ -1094,6 +1210,8 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
           setIsPdfModalOpen(false);
           setPdfBlob(null);
           setPdfError(null);
+          setPdfProgress(null);
+          setCurrentPdfJobId(null);
           setPdfRetryAction(null);
         }}
         pdfBlob={pdfBlob}
@@ -1101,7 +1219,9 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
         filename={pdfFilename}
         loading={pdfLoading}
         error={pdfError}
+        progress={pdfProgress}
         onRetry={pdfRetryAction || undefined}
+        onRetryFailedPages={currentPdfJobId ? handleRetryFailedPdfPages : undefined}
       />
 
       {/* Voter Photo Preview & Verification Modal */}

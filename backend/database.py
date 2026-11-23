@@ -309,6 +309,90 @@ class DocumentPageModel(Base):
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
+class PdfExportJobModel(Base):
+    __tablename__ = "pdf_export_jobs"
+
+    id = Column(String(64), primary_key=True) # UUID
+    title = Column(String(255), nullable=False, default="ఓటర్ల జాబితా PDF")
+    status = Column(String(32), default="pending", nullable=False, index=True) # pending, processing, completed, failed, partial
+    total_records = Column(Integer, default=0, nullable=False)
+    total_pages = Column(Integer, default=0, nullable=False)
+    completed_pages = Column(Integer, default=0, nullable=False)
+    failed_pages = Column(Integer, default=0, nullable=False)
+    filter_criteria = Column(JSONText, nullable=True)
+    output_path = Column(String(512), nullable=True)
+    file_size = Column(BigInteger, default=0, nullable=False)
+    error_message = Column(Text, nullable=True)
+    document_id = Column(String(64), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    pages = relationship("PdfExportPageModel", back_populates="job", cascade="all, delete-orphan", order_by="PdfExportPageModel.page_number")
+    user = relationship("UserModel")
+    document = relationship("DocumentModel")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "status": self.status,
+            "total_records": self.total_records,
+            "total_pages": self.total_pages,
+            "completed_pages": self.completed_pages,
+            "failed_pages": self.failed_pages,
+            "filter_criteria": self.filter_criteria,
+            "output_path": self.output_path,
+            "file_size": self.file_size,
+            "error_message": self.error_message,
+            "document_id": self.document_id,
+            "progress_percent": round((self.completed_pages / max(1, self.total_pages)) * 100, 1) if self.total_pages > 0 else 0,
+            "download_url": f"/api/voters/pdf/export-jobs/{self.id}/download" if self.status in ("completed", "partial") and self.output_path else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+        }
+
+class PdfExportPageModel(Base):
+    __tablename__ = "pdf_export_pages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(String(64), ForeignKey("pdf_export_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_number = Column(Integer, nullable=False, index=True)
+    status = Column(String(32), default="pending", nullable=False, index=True) # pending, processing, completed, failed, retry
+    voter_count = Column(Integer, default=0, nullable=False)
+    start_serial = Column(String(32), nullable=True)
+    end_serial = Column(String(32), nullable=True)
+    temp_page_path = Column(String(512), nullable=True)
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    job = relationship("PdfExportJobModel", back_populates="pages")
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "page_number", name="uq_pdf_export_job_page"),
+        Index("idx_pdf_export_page_status", "job_id", "status"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "page_number": self.page_number,
+            "status": self.status,
+            "voter_count": self.voter_count,
+            "start_serial": self.start_serial,
+            "end_serial": self.end_serial,
+            "temp_page_path": self.temp_page_path,
+            "error_message": self.error_message,
+            "retry_count": self.retry_count,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
 class VoterRecordModel(Base):
     __tablename__ = "voter_records"
 

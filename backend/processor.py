@@ -132,7 +132,7 @@ def detect_voter_cells(page):
     headers = []
     for b in blocks:
         text = b[4]
-        if re.search(r'(?:వ\.సం|గ్రా\.పం|క్ర\.సం|Sl\.?\s*No|S\.No)\s*[:\.]?\s*\d+', text, re.IGNORECASE):
+        if re.search(r'(?:వ\.సం|గ్రా\.పం|వార్డు|క్ర\.సం|Sl\.?\s*No|S\.No)\s*[:\.]?\s*\d+', text, re.IGNORECASE):
             headers.append(fitz.Rect(b[:4]))
             
     if len(headers) >= 6:
@@ -141,7 +141,7 @@ def detect_voter_cells(page):
 
     # Fallback 2: Standard 3-column x 9-row or 3-column x 10-row grid for standard A4 voter rolls
     sample_text = page.get_text("text")
-    if any(k in sample_text for k in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము"]):
+    if any(k in sample_text for k in ["వ.సం", "గ్రా.పం", "వార్డు", "ఓటరు", "ఓటర్", "లింగం", "లింగము"]):
         grid_cells = []
         margin_x = 32.0
         margin_top = 38.0
@@ -163,13 +163,30 @@ def detect_voter_cells(page):
 
     return []
 
+def clean_extracted_text(val: str, default: str = "Not Available") -> str:
+    """Strip photo watermarks, trailing punctuation, and extra whitespace from extracted text."""
+    if not val or val == default:
+        return default
+    cleaned = re.sub(r'(?i)\b(?:Photo\s*(?:Not\s*)?Available|Available|Photo)\b', '', val)
+    cleaned = re.sub(r'ఫోటో\s*అందుబాటులో\s*(?:ఉంది|లేదు|ఉన్నది)', '', cleaned)
+    cleaned = re.sub(r'ఫోటో(?:\s*లేదు|\s*ఉంది)?', '', cleaned)
+    cleaned = " ".join(cleaned.split()).strip(" :-.,;/")
+    return cleaned if cleaned else default
+
 def parse_voter_cell_text(raw_text, page_no=1):
     """Accurately parse all structured fields from a voter block text."""
     text = (raw_text or "").replace("\xa0", " ").strip()
     
+    # 0. Clean photo watermarks/placeholders before field parsing
+    text = re.sub(r'(?i)\bPhoto\s*(?:Not\s*)?Available\b', '', text)
+    text = re.sub(r'(?i)\b(?:Available|Photo)\b', '', text)
+    text = re.sub(r'ఫోటో\s*అందుబాటులో\s*(?:ఉంది|లేదు|ఉన్నది)', '', text)
+    text = re.sub(r'ఫోటో(?:\s*లేదు|\s*ఉంది)?', '', text)
+
     # 1. Normalize line wraps inside words and labels
     text = re.sub(r'స్\s*\n\s*త్రీ', 'స్త్రీ', text)
     text = re.sub(r'గ్రా[ా-్]*\s*\n*\s*\.?\s*పం\.?\s*ఓ\.?\s*జా\.?\s*వ\.?\s*సం\.?', 'గ్రా.పం.ఓ.జా.వ.సం.', text)
+    text = re.sub(r'[వ]?ార్డు[ా-్]*\s*\n*\s*\.?\s*ఓ\.?\s*జా\.?\s*వ\.?\s*సం\.?', 'వార్డు.ఓ.జా.వ.సం.', text)
     text = re.sub(r'అ[ా-్]*\s*\n*\s*\.?\s*ఓ\.?\s*జా\.?\s*వ\.?\s*సం\.?', 'అ.ఓ.జా.వ.సం.', text)
     text = re.sub(r'ఓటరు\s*\n*\s*పేరు\s*[:\.]?', 'ఓటరు పేరు:', text)
     text = re.sub(r'తండ్రి[ిీ్\s]*\n*\s*(?:పేరు)?\s*[:\.]?', 'తండ్రి పేరు:', text)
@@ -180,21 +197,26 @@ def parse_voter_cell_text(raw_text, page_no=1):
     text = re.sub(r'ఓటరు\s*ఐడి\.?\s*(?:కార్డు\s*నెం\.?)?\s*[:\.]?', 'ఓటరు ఐడి:', text)
     text = re.sub(r'వయస్సు\s*\n*\s*[:\.]?', 'వయస్సు:', text)
 
-    # 1. Serial Number
-    m_sno = re.search(r'(?:గ్రా\.పం\.ఓ\.జా\.వ\.సం\.|వ\.సం|క్ర\.సం|వరుస సంఖ్య|Sl\.?\s*No|S\.No)\s*[:\.]?\s*(\d+)', text, re.IGNORECASE)
+    # 1. Serial Number (Strictly treat వార్డు.ఓ.జా.వ.సం. / గ్రా.పం.ఓ.జా.వ.సం. as voter Serial Number)
+    m_sno = re.search(r'(?:గ్రా\.పం\.ఓ\.జా\.వ\.సం\.|[వ]?ార్డు\.ఓ\.జా\.వ\.సం\.|వార్డు\.ఓ\.జా\.వ\.సం\.|ార్డు\.ఓ\.జా\.వ\.సం\.|వ\.సం|క్ర\.సం|వరుస సంఖ్య|Sl\.?\s*No|S\.No)[\s\.:]*(\d+)', text, re.IGNORECASE)
+    if not m_sno:
+        m_sno = re.search(r'(?:[వ]?ార్డు[^\d\n]*|గ్రా\.పం[^\d\n]*)[\s\.:]*(\d+)', text)
+    if not m_sno:
+        m_sno = re.search(r'(?:^|\n)\s*(\d+)\s*(?=\n|అ\.ఓ\.జా|ఓటరు)', text)
     serial_no = m_sno.group(1).strip() if m_sno else "Not Available"
     
     # 2. Roll No
-    m_roll = re.search(r'(?:అ\.ఓ\.జా\.వ\.సం\.|రోల్\s*సంఖ్య|Roll\s*No)\s*[:\.]?\s*([A-Za-z0-9\s\-\/]+?)(?=\n|ఓటరు|పేరు|$)', text)
+    m_roll = re.search(r'(?:అ\.ఓ\.జా\.వ\.సం\.|రోల్\s*సంఖ్య|Roll\s*No)[\s\.:]*([A-Za-z0-9\s\-\/]+?)(?=\n|ఓటరు|పేరు|$)', text)
     roll = m_roll.group(1).strip() if m_roll else "Not Available"
     
     # 3. EPIC Number (Voter ID)
-    m_epic = re.search(r'\b([A-Z]{3,4}[0-9]{7})\b', text)
+    m_epic = re.search(r'([A-Z]{2,4}\s*[0-9]{6,8})', text)
     if not m_epic:
-        m_epic = re.search(r'\b([A-Z]{2,4}[0-9]{6,8})\b', text)
-    if not m_epic:
-        m_epic = re.search(r'(?:ఓటరు ఐడి|గుర్తింపు కార్డు|EPIC)\s*[:\.\-]?\s*([A-Za-z0-9]+)', text)
-    voter_id = m_epic.group(1).strip() if m_epic else "Not Available"
+        m_epic = re.search(r'(?:ఓటరు ఐడి|గుర్తింపు కార్డు|EPIC)[\s\.:\-]*([A-Za-z0-9]+)', text)
+    if m_epic:
+        voter_id = re.sub(r'[^A-Za-z0-9]', '', m_epic.group(1)).strip().upper()
+    else:
+        voter_id = "Not Available"
 
     # Section / Security code (often 5 characters below EPIC in Telugu rolls, e.g. RN7FF)
     sec_code = None
@@ -213,6 +235,7 @@ def parse_voter_cell_text(raw_text, page_no=1):
     if not m_name:
         m_name = re.search(r'(?:Name)\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:Father|Husband|Mother|House|Age|$))', text, re.IGNORECASE)
     voter_name = " ".join(m_name.group(1).split()).strip() if m_name else "Not Available"
+    voter_name = clean_extracted_text(voter_name)
     
     # 5. Relation (Father / Husband / Mother / Guardian)
     rel_type = "Not Available"
@@ -223,19 +246,21 @@ def parse_voter_cell_text(raw_text, page_no=1):
     if m_rel:
         rel_type = m_rel.group(1).strip()
         rel_name = " ".join(m_rel.group(2).split()).strip()
+        rel_name = clean_extracted_text(rel_name)
         
     # 6. House No
     m_house = re.search(r'ఇంటి\s*సంఖ్య\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:ఓటరు ఐడి|గుర్తింపు కార్డు|వయస్సు|లింగము|లింగం|Gender|$))', text)
     if not m_house:
         m_house = re.search(r'House\s*No\s*[:\.]?\s*([\s\S]+?)(?=\n?\s*(?:EPIC|Age|Gender|$))', text, re.IGNORECASE)
     house_no = " ".join(m_house.group(1).split()).strip() if m_house else "Not Available"
+    house_no = clean_extracted_text(house_no)
     
     # 7. Age
-    m_age = re.search(r'(?:వయస్సు|Age)\s*[:\.]?\s*(\d+)', text, re.IGNORECASE)
+    m_age = re.search(r'(?:వయస్సు|Age)[\s\.:]*(\d+)', text, re.IGNORECASE)
     age = m_age.group(1).strip() if m_age else "Not Available"
     
     # 8. Gender (strictly anchored to avoid matching 'లింగం' inside voter names)
-    m_gen = re.search(r'(?:^|\n|\d+\s+)(?:లింగము|లింగం|Gender)\s*[:\.\-]?\s*([^\n\r]+)', text)
+    m_gen = re.search(r'(?:^|\n|\d+\s+)(?:లింగము|లింగం|Gender)[\s\.:\-]*([^\n\r]+)', text)
     gender = "Not Available"
     if m_gen:
         raw_gen = m_gen.group(1).strip()
@@ -248,8 +273,9 @@ def parse_voter_cell_text(raw_text, page_no=1):
         else:
             gender = raw_gen
             
+    sno_field_label = "వార్డు.ఓ.జా.వ.సం." if "వార్డు" in (raw_text or "") else "గ్రా.పం.ఓ.జా.వ.సం."
     fields = [
-        {"field_name": "గ్రా.పం.ఓ.జా.వ.సం.", "value": serial_no},
+        {"field_name": sno_field_label, "value": serial_no},
         {"field_name": "అ.ఓ.జా.వ.సం.", "value": roll},
         {"field_name": "ఓటరు పేరు", "value": voter_name},
         {"field_name": f"{rel_type} పేరు" if rel_type != "Not Available" else "తండ్రి / భర్త పేరు", "value": rel_name},
@@ -394,17 +420,22 @@ def parse_voter_blocks(text, page_no):
     """Legacy voter block text parser maintained for backward compatibility."""
     records = []
     text = (text or "").replace("\xa0", " ")
+    text = re.sub(r'(?i)\bPhoto\s*(?:Not\s*)?Available\b', '', text)
+    text = re.sub(r'(?i)\b(?:Available|Photo)\b', '', text)
+    text = re.sub(r'ఫోటో\s*అందుబాటులో\s*(?:ఉంది|లేదు|ఉన్నది)', '', text)
+    text = re.sub(r'ఫోటో(?:\s*లేదు|\s*ఉంది)?', '', text)
     text = re.sub(r'(\n|^)([\u0C00-\u0C7F\w\.\s]+?)\n\s*:\s*', r'\1\2 : ', text)
     text = re.sub(r'గ్రా[ా-్]?\s*\n\s*\.పం', 'గ్రా.పం', text)
+    text = re.sub(r'[వ]?ార్డు[ా-్]*\s*\n*\s*\.?\s*ఓ\.?\s*జా\.?\s*వ\.?\s*సం\.?', 'వార్డు.ఓ.జా.వ.సం.', text)
     text = re.sub(r'స్\s*\n\s*త్రీ', 'స్త్రీ', text)
     text = re.sub(r'తండ్రి[ి-్]?\s*\n\s*పేరు', 'తండ్రి పేరు', text)
     text = re.sub(r'భర్త[ా-్]?\s*\n\s*పేరు', 'భర్త పేరు', text)
     text = re.sub(r'ఇంటి\s*\n\s*సంఖ్య', 'ఇంటి సంఖ్య', text)
     text = re.sub(r'ఓటరు\s*ఐడి[\.\s]*\n\s*కార్డు', 'ఓటరు ఐడి కార్డు', text)
 
-    parts = re.split(r'(?=(?:గ్రా\.పం\.ఓ\.జా\.వ\.సం\.|వ\.సం\s*:))', text)
+    parts = re.split(r'(?=(?:గ్రా\.పం\.ఓ\.జా\.వ\.సం\.|[వ]?ార్డు\.ఓ\.జా\.వ\.సం\.|వార్డు\.ఓ\.జా\.వ\.సం\.|ార్డు\.ఓ\.జా\.వ\.సం\.|వ\.సం\s*:))', text)
     for p in parts:
-        if not p.strip() or not any(k in p for k in ['గ్రా.పం.ఓ.జా.వ.సం.', 'వ.సం']):
+        if not p.strip() or not any(k in p for k in ['గ్రా.పం.ఓ.జా.వ.సం.', 'వార్డు.ఓ.జా.వ.సం.', 'ార్డు.ఓ.జా.వ.సం.', 'వ.సం']):
             continue
         parsed = parse_voter_cell_text(p, page_no)
         records.append({
@@ -443,7 +474,7 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
             page_no = p_idx + 1
             text = page.get_text("text") or ""
             
-            is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య", "Sl.No", "S.No", "EPIC", "Voter", "voter"])
+            is_voter_page = any(kw in text for kw in ["వ.సం", "గ్రా.పం", "వార్డు", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య", "Sl.No", "S.No", "EPIC", "Voter", "voter"])
             if is_voter_page:
                 cells = detect_voter_cells(page)
                 if cells:
@@ -487,7 +518,7 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
     for p in pages:
         page_no = p.get("page", 1)
         text = p.get("text", "")
-        if any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు"]):
+        if any(kw in text for kw in ["వ.సం", "గ్రా.పం", "వార్డు", "ఓటరు"]):
             v_recs = parse_voter_blocks(text, page_no)
             records.extend(v_recs)
             
@@ -590,7 +621,7 @@ def extract_single_page_records(doc, page_no: int, doc_id: str):
     records = []
 
     is_voter_page = any(kw in text for kw in [
-        "వ.సం", "గ్రా.పం", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య",
+        "వ.సం", "గ్రా.పం", "వార్డు", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య",
         "Sl.No", "S.No", "EPIC", "Voter", "voter"
     ])
 
@@ -630,7 +661,7 @@ def extract_single_page_records(doc, page_no: int, doc_id: str):
                 }
                 records.append(rec_dict)
 
-    if not records and any(kw in text for kw in ["వ.సం", "గ్రా.పం", "ఓటరు"]):
+    if not records and any(kw in text for kw in ["వ.సం", "గ్రా.పం", "వార్డు", "ఓటరు"]):
         records = parse_voter_blocks(text, page_no)
 
     return records

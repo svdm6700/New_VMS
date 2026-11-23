@@ -4,6 +4,7 @@ import { Menu, UploadCloud, LogOut } from 'lucide-react';
 import { ThemeToggle } from '../common/ThemeToggle';
 import { useDocuments } from '../../contexts/DocumentContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { API_BASE_URL } from '../../services/api';
 
 interface TopNavbarProps {
   onOpenSidebar: () => void;
@@ -73,7 +74,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenSidebar }) => {
       <div className="flex items-center gap-2 sm:gap-3">
         {/* Backend Status indicator */}
         <div
-          title={backendOnline ? 'Backend API Connected (http://127.0.0.1:8000)' : 'Backend API Offline'}
+          title={backendOnline ? `Backend API Connected (${API_BASE_URL})` : 'Backend API Offline'}
           className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border ${
             backendOnline
               ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60'

@@ -5,8 +5,20 @@
  */
 
 function getApiBaseUrl(): string {
-  const rawBase = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) || 'http://127.0.0.1:8000';
-  return String(rawBase).replace(/\/api\/?$/, '');
+  if (typeof window !== 'undefined' && (window as any).__API_BASE_URL__) {
+    return (window as any).__API_BASE_URL__;
+  }
+  const envUrl = (typeof import.meta !== 'undefined' && (import.meta.env?.VITE_API_BASE_URL || import.meta.env?.VITE_API_URL));
+  if (envUrl && String(envUrl).trim()) {
+    return String(envUrl).trim().replace(/\/api\/?$/, '');
+  }
+  if (typeof window !== 'undefined' && window.location) {
+    const proto = window.location.protocol;
+    const hostname = window.location.hostname || 'localhost';
+    const port = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BACKEND_PORT) || '8000';
+    return `${proto}//${hostname}:${port}`;
+  }
+  return 'http://127.0.0.1:8000';
 }
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL';

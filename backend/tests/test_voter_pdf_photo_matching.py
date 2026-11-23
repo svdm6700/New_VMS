@@ -360,3 +360,42 @@ def test_excel_generation_with_photo_status():
     excel_bytes = create_excel(mock_result)
     assert len(excel_bytes) > 1000
     assert excel_bytes[:2] == b"PK" # Zip file signature for .xlsx
+
+# =========================================================================
+# 9. Photo Watermark Stripping & Ward Electoral Roll Serial Number Test
+# =========================================================================
+def test_parse_voter_cell_photo_watermark_clean_and_ward_serial():
+    """
+    Verify that photo placeholder text like 'Photo Available' or 'Photo Not Available'
+    is cleanly stripped from voter names, relation names, and house numbers,
+    and that ward electoral serial numbers ('వార్డు.ఓ.జా.వ.సం.') are accurately parsed.
+    """
+    raw_cell_ward_photo = (
+        "వార్డు.ఓ.జా.వ.సం. . \xa0 1 \xa0\n"
+        "అ.ఓ.జా.వ.సం .62 - 148 - 680\n"
+        "ఓటరు పేరు\n: అపర్ణ పేధాద Photo Available\n"
+        "భర్త పేరు\n: పెదడ మోశే\n"
+        "Photo\nAvailable\n"
+        "వయస్సు\n: 26\n"
+        "లింగము :\xa0 స్\nత్రీ\n"
+        "ఇంటి సంఖ్య\n: 1-1\n"
+        "ఓటరు ఐడి. కార్డు నెం. :\xa0 SJC1101658ా\n"
+    )
+    parsed = parse_voter_cell_text(raw_cell_ward_photo, page_no=1)
+    
+    assert parsed["serial_no"] == "1"
+    assert parsed["electoral_roll_no"] == "62 - 148 - 680"
+    assert parsed["voter_name"] == "అపర్ణ పేధాద"
+    assert "Photo" not in parsed["voter_name"]
+    assert "Available" not in parsed["voter_name"]
+    
+    assert parsed["relation_type"] == "భర్త"
+    assert parsed["relation_name"] == "పెదడ మోశే"
+    assert "Photo" not in parsed["relation_name"]
+    assert "Available" not in parsed["relation_name"]
+    
+    assert parsed["voter_id"] == "SJC1101658"
+    assert parsed["age"] == "26"
+    assert parsed["gender"] == "స్త్రీ"
+    assert parsed["house_no"] == "1-1"
+

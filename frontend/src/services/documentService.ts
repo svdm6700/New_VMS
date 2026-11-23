@@ -239,6 +239,7 @@ export const documentService = {
 
   // -------------------------------------------------------------
   // Voter List A4 PDF Generation (27 Voters per Page, 3x9 Grid)
+  // Page-Wise, Memory-Efficient, Recoverable with Background Jobs
   // -------------------------------------------------------------
   async getIndividualVoterPdf(voterId: string | number): Promise<Blob> {
     const res = await api.get(`/api/voters/${voterId}/pdf`, { responseType: 'blob', timeout: 60000 });
@@ -246,7 +247,21 @@ export const documentService = {
   },
 
   async getSelectedVotersPdf(voterIds: (string | number)[]): Promise<Blob> {
-    const res = await api.post('/api/voters/pdf/selected', { voter_ids: voterIds }, { responseType: 'blob', timeout: 120000 });
+    const res = await api.post('/api/voters/pdf/selected', { voter_ids: voterIds }, { responseType: 'blob', timeout: 180000 });
+    return new Blob([res.data], { type: 'application/pdf' });
+  },
+
+  async getSinglePagePdf(params: {
+    page_number: number;
+    total_pages?: number;
+    document_id?: string;
+    voter_ids?: (string | number)[];
+    panchayat?: string;
+    constituency?: string;
+    ward?: string;
+    district?: string;
+  }): Promise<Blob> {
+    const res = await api.post('/api/voters/pdf/page', params, { responseType: 'blob', timeout: 30000 });
     return new Blob([res.data], { type: 'application/pdf' });
   },
 
@@ -259,8 +274,40 @@ export const documentService = {
     query?: string;
     search_unique_id?: string;
     gender?: string;
+    page?: number;
   }): Promise<Blob> {
-    const res = await api.post('/api/voters/pdf/generate', filters || {}, { responseType: 'blob', timeout: 120000 });
+    const res = await api.post('/api/voters/pdf/generate', filters || {}, { responseType: 'blob', timeout: 180000 });
+    return new Blob([res.data], { type: 'application/pdf' });
+  },
+
+  async startPdfExportJob(payload: {
+    title?: string;
+    district?: string;
+    constituency?: string;
+    ward_number?: string;
+    area?: string;
+    document_id?: string;
+    query?: string;
+    search_unique_id?: string;
+    gender?: string;
+    voter_ids?: (string | number)[];
+  }): Promise<any> {
+    const res = await api.post('/api/voters/pdf/export-jobs', payload, { timeout: 30000 });
+    return res.data;
+  },
+
+  async getPdfJobProgress(jobId: string): Promise<any> {
+    const res = await api.get(`/api/voters/pdf/export-jobs/${jobId}`, { timeout: 15000 });
+    return res.data;
+  },
+
+  async retryPdfJob(jobId: string): Promise<any> {
+    const res = await api.post(`/api/voters/pdf/export-jobs/${jobId}/retry`, {}, { timeout: 15000 });
+    return res.data;
+  },
+
+  async downloadPdfJobBlob(jobId: string): Promise<Blob> {
+    const res = await api.get(`/api/voters/pdf/export-jobs/${jobId}/download`, { responseType: 'blob', timeout: 180000 });
     return new Blob([res.data], { type: 'application/pdf' });
   },
 
