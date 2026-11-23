@@ -2220,8 +2220,8 @@ def generate_individual_voter_pdf(
 
     _check_voter_geographic_scope(voter, current_user, db)
 
-    pdf_bytes = generate_voters_a4_pdf([voter])
     uk = voter.unique_key or "voter"
+    pdf_bytes = generate_voters_a4_pdf([voter], title=f"ఓటరు వివరాలు - {voter.voter_name or ''} ({uk})")
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",
@@ -2273,7 +2273,7 @@ def generate_selected_voters_pdf(
     for voter in voters:
         _check_voter_geographic_scope(voter, current_user, db)
 
-    pdf_bytes = generate_voters_a4_pdf(voters)
+    pdf_bytes = generate_voters_a4_pdf(voters, title=f"ఎంపిక చేసిన ఓటర్ల జాబితా ({len(voters)} రికార్డులు)")
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",
@@ -2407,7 +2407,14 @@ def generate_filtered_voter_list_pdf(
         q = q.filter(VoterRecordModel.gender.ilike(f"%{eff_gender}%"))
 
     voters = q.order_by(asc(VoterRecordModel.id)).all()
-    pdf_bytes = generate_voters_a4_pdf(voters)
+    pdf_bytes = generate_voters_a4_pdf(
+        voters,
+        title="ఓటర్ల జాబితా (Voter List)",
+        district=eff_district,
+        constituency=eff_constituency,
+        ward=eff_ward,
+        area=eff_area
+    )
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",

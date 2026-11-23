@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Printer, Download, FileText, RefreshCw, ExternalLink } from 'lucide-react';
+import { X, Printer, Download, FileText, RefreshCw, ExternalLink, AlertCircle } from 'lucide-react';
 
 interface PdfPreviewModalProps {
   isOpen: boolean;
@@ -8,6 +8,8 @@ interface PdfPreviewModalProps {
   title?: string;
   filename?: string;
   loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
 }
 
 export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
@@ -17,6 +19,8 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
   title = 'A4 Voter List PDF Preview',
   filename = 'voter_list.pdf',
   loading = false,
+  error = null,
+  onRetry,
 }) => {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -143,6 +147,37 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
               <p className="text-xs text-slate-400">
                 Arranging 27 records per page, extracting voter photographs, and embedding permanent unique keys.
               </p>
+            </div>
+          ) : error ? (
+            <div className="max-w-md w-full bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900/60 rounded-3xl p-6 shadow-xl text-center flex flex-col items-center gap-4 animate-in fade-in">
+              <div className="w-14 h-14 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border border-rose-100 dark:border-rose-900/50 text-rose-600 dark:text-rose-400 flex items-center justify-center">
+                <AlertCircle className="w-7 h-7" />
+              </div>
+              <div>
+                <h4 className="text-base font-bold text-slate-900 dark:text-slate-100 mb-1">
+                  PDF Generation Failed
+                </h4>
+                <p className="text-xs text-slate-600 dark:text-slate-400 break-words leading-relaxed">
+                  {error}
+                </p>
+              </div>
+              <div className="flex items-center gap-3 w-full pt-2">
+                {onRetry && (
+                  <button
+                    onClick={onRetry}
+                    className="flex-1 py-2.5 px-4 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2 active:scale-95"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Try Again</span>
+                  </button>
+                )}
+                <button
+                  onClick={onClose}
+                  className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold transition-all active:scale-95"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
           ) : blobUrl ? (
             <iframe

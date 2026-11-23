@@ -97,6 +97,8 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
   const [pdfTitle, setPdfTitle] = useState('A4 Voter List PDF Preview');
   const [pdfFilename, setPdfFilename] = useState('voter_list.pdf');
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [pdfRetryAction, setPdfRetryAction] = useState<(() => void) | null>(null);
 
   // Export Dropdown State
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
@@ -223,46 +225,56 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
 
   // PDF Generation Handlers (A4, 27 Voters per Page, 3x9 Grid)
   const handlePrintIndividualVoterPdf = async (voter: VoterRecord) => {
+    if (pdfLoading) return;
     const key = voter.unique_key || voter.voter_id || String(voter.id);
     setPdfTitle(`ఓటరు రికార్డు PDF - ${voter.voter_name} (${key})`);
     setPdfFilename(`voter_${key}.pdf`);
+    setPdfBlob(null);
+    setPdfError(null);
+    setPdfRetryAction(() => () => handlePrintIndividualVoterPdf(voter));
     setPdfLoading(true);
     setIsPdfModalOpen(true);
     try {
       const blob = await documentService.getIndividualVoterPdf(voter.id);
       setPdfBlob(blob);
     } catch (err: any) {
-      alert(`Failed to generate individual voter PDF: ${err.message || err}`);
-      setIsPdfModalOpen(false);
+      setPdfError(err.message || 'Failed to generate individual voter PDF.');
     } finally {
       setPdfLoading(false);
     }
   };
 
   const handleGenerateSelectedPdf = async () => {
+    if (pdfLoading) return;
     if (selectedVoterIds.length === 0) {
       alert('దయచేసి PDF తయారీ కోసం కనీసం ఒక ఓటరును ఎంచుకోండి (Please select at least one voter).');
       return;
     }
     setPdfTitle(`ఎంపిక చేసిన ఓటర్ల A4 జాబితా PDF (${selectedVoterIds.length} ఓటర్లు)`);
     setPdfFilename(`voters_selected_${selectedVoterIds.length}.pdf`);
+    setPdfBlob(null);
+    setPdfError(null);
+    setPdfRetryAction(() => () => handleGenerateSelectedPdf());
     setPdfLoading(true);
     setIsPdfModalOpen(true);
     try {
       const blob = await documentService.getSelectedVotersPdf(selectedVoterIds);
       setPdfBlob(blob);
     } catch (err: any) {
-      alert(`Failed to generate selected voters PDF: ${err.message || err}`);
-      setIsPdfModalOpen(false);
+      setPdfError(err.message || 'Failed to generate selected voters PDF.');
     } finally {
       setPdfLoading(false);
     }
   };
 
   const handleGenerateCompletePdf = async () => {
+    if (pdfLoading) return;
     setPdfTitle(`సంపూర్ణ ఓటర్ల జాబితా A4 PDF (${totalRecords.toLocaleString()} ఓటర్లు)`);
     const docPrefix = selectedDocId ? `doc_${selectedDocId.slice(0, 8)}` : 'all_voters';
     setPdfFilename(`voter_list_${docPrefix}.pdf`);
+    setPdfBlob(null);
+    setPdfError(null);
+    setPdfRetryAction(() => () => handleGenerateCompletePdf());
     setPdfLoading(true);
     setIsPdfModalOpen(true);
     try {
@@ -277,8 +289,7 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
       });
       setPdfBlob(blob);
     } catch (err: any) {
-      alert(`Failed to generate complete voter list PDF: ${err.message || err}`);
-      setIsPdfModalOpen(false);
+      setPdfError(err.message || 'Failed to generate complete voter list PDF.');
     } finally {
       setPdfLoading(false);
     }
@@ -1082,11 +1093,15 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
         onClose={() => {
           setIsPdfModalOpen(false);
           setPdfBlob(null);
+          setPdfError(null);
+          setPdfRetryAction(null);
         }}
         pdfBlob={pdfBlob}
         title={pdfTitle}
         filename={pdfFilename}
         loading={pdfLoading}
+        error={pdfError}
+        onRetry={pdfRetryAction || undefined}
       />
 
       {/* Voter Photo Preview & Verification Modal */}

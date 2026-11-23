@@ -264,11 +264,10 @@ export const VoterVerificationPage: React.FC = () => {
                     </span>
                     <span className="text-slate-300 dark:text-slate-700">•</span>
                     <span
-                      className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
-                        voter.gender?.includes('స్త్రీ')
+                      className={`px-2 py-0.5 rounded-full text-xs font-semibold ${voter.gender?.includes('స్త్రీ')
                           ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-900'
                           : 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200 dark:border-blue-900'
-                      }`}
+                        }`}
                     >
                       {voter.gender || '—'}
                     </span>
@@ -347,11 +346,10 @@ export const VoterVerificationPage: React.FC = () => {
                 type="button"
                 onClick={handleSubmitPayment}
                 disabled={isSubmittingPayment || isPaid}
-                className={`w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3 rounded-2xl text-sm font-bold shadow-lg transition-all transform ${
-                  isPaid
+                className={`w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3 rounded-2xl text-sm font-bold shadow-lg transition-all transform ${isPaid
                     ? 'bg-emerald-600 text-white cursor-default opacity-90'
                     : 'bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white shadow-brand-500/25 hover:-translate-y-0.5 cursor-pointer disabled:cursor-not-allowed'
-                }`}
+                  }`}
               >
                 {isSubmittingPayment ? (
                   <>
@@ -382,7 +380,7 @@ export const VoterVerificationPage: React.FC = () => {
               <ShieldCheck className="w-7 h-7" />
             </div>
             <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-100">
-              Voter Verification
+              Verification
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400 font-telugu">
               ఓటరు ధృవీకరణ కోసం 5 అక్షరాల యూనిక్ కోడ్‌ను నమోదు చేయండి
@@ -393,7 +391,7 @@ export const VoterVerificationPage: React.FC = () => {
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
               <label htmlFor="voter-code" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2 text-center">
-                Voter Unique Code
+                Code
               </label>
 
               <div className="relative">
@@ -408,11 +406,10 @@ export const VoterVerificationPage: React.FC = () => {
                   autoComplete="off"
                   spellCheck="false"
                   disabled={isLoading}
-                  className={`w-full px-4 py-3.5 text-center text-xl sm:text-2xl font-mono font-bold tracking-widest rounded-2xl bg-slate-50 dark:bg-slate-800 border uppercase transition-all focus:outline-none focus:ring-4 ${
-                    validationError || notFoundError
+                  className={`w-full px-4 py-3.5 text-center text-xl sm:text-2xl font-mono font-bold tracking-widest rounded-2xl bg-slate-50 dark:bg-slate-800 border uppercase transition-all focus:outline-none focus:ring-4 ${validationError || notFoundError
                       ? 'border-rose-400 dark:border-rose-600 text-rose-600 focus:ring-rose-500/20'
                       : 'border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:border-brand-500 focus:ring-brand-500/20'
-                  }`}
+                    }`}
                 />
               </div>
 
