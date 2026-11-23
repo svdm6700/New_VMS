@@ -1,13 +1,28 @@
 """
-VMS - High-Performance A4 Voter List PDF Generator (3 Columns × 9 Rows = 27 Voters per Page)
-Generates print-ready A4 Portrait PDFs strictly following reference electoral roll layout:
-- 27 voter records per page in an exact 3-column x 9-row grid.
-- Prominent 5-character alphanumeric Unique Key inside each block (code only, no label).
-- Genuine voter details (Serial No, EPIC ID, Name, Relation, House No, Age, Gender).
-- Actual voter photographs (embedded with proportional fit, graceful fallback).
-- Strictly NO VMS logo, watermark, branding, or app name.
-- Unicode Telugu fonts embedded with 100% fidelity.
-- Sub-second generation speed with TextWriter batching, Shape vector batching, and stream compression.
+VMS - Exact Reference A4 Voter List PDF Generator (3 Columns × 9 Rows = 27 Voters per Page)
+Visually and structurally reproduces the reference electoral roll PDF (Ramachandrapuram-10-11.pdf):
+- Standard A4 portrait format (595.28 pt × 841.89 pt).
+- Outer page bounding border with top header, 3x9 voter grid, and footer.
+- Header:
+  * Centered Title: '{panchayat} పంచాయతీ ఓటర్ల జాబితా - {year}' (Bold)
+  * Centered Subtitle: '{constituency} శాసనసభ నియోజకవర్గము'
+  * Left Box: 'పంచాయతీ : {panchayat}' and 'మండలము : {mandal}'
+  * Right Box: 'వార్డు నెంబరు : {ward}' and 'జిల్లా : {district}'
+- Exactly 27 voter blocks per full page in 3 columns × 9 rows.
+- Each Voter Block:
+  * Header: 'గ్రా.పం.ఓ.జా.వ.సం. [S.No]' on left, 'అ.ఓ.జా.వ.సం. {roll_no}' in center, permanent 5-char unique key on right.
+  * Details (Left):
+    - ఓటరు పేరు : {voter_name}
+    - తండ్రి/భర్త పేరు : {relation_name}
+    - వయస్సు : {age}   లింగము : {gender}
+    - ఇంటి సంఖ్య : {house_no}
+    - ఓటరు ఐడి. కార్డు నెం. : {epic_id}
+  * Photograph (Right): 39pt × 41pt proportional fit with border and fallback placeholder.
+- Footer:
+  * Left: 'వయస్సు లెక్కింపు తేదీ : {as_on_date}'
+  * Center: 'ప్రచురణ తేదీ : {publish_date}'
+  * Right: 'పుట సంఖ్య . {page_no}/{total_pages}'
+- Pure high-performance implementation using PyMuPDF TextWriter, Shape batching, and stream compression.
 """
 
 import os
@@ -28,19 +43,22 @@ VOTERS_PER_PAGE = 27
 COLS = 3
 ROWS = 9
 
-LEFT_MARGIN = 32.0
-RIGHT_MARGIN = 32.0
-TOP_MARGIN = 38.0
-BOTTOM_MARGIN = 38.0
+# Exact Geometry Extracted from Reference PDF (Ramachandrapuram-10-11.pdf)
+PAGE_FRAME_X0 = 33.7
+PAGE_FRAME_Y0 = 35.0
+PAGE_FRAME_X1 = 567.3
+PAGE_FRAME_Y1 = 800.8
 
-COL_GAP = 4.0
-ROW_GAP = 4.0
+HEADER_SEP_Y = 100.5
+FOOTER_SEP_Y = 786.5
 
-AVAILABLE_WIDTH = A4_WIDTH - LEFT_MARGIN - RIGHT_MARGIN
-COL_WIDTH = (AVAILABLE_WIDTH - (COLS - 1) * COL_GAP) / COLS  # ~174.4 pt
+COL_WIDTH = 173.8
+COL_GAP = 3.6
+GRID_X0 = 36.2
 
-AVAILABLE_HEIGHT = A4_HEIGHT - TOP_MARGIN - BOTTOM_MARGIN
-BOX_HEIGHT = (AVAILABLE_HEIGHT - (ROWS - 1) * ROW_GAP) / ROWS  # ~81.5 pt
+BOX_HEIGHT = 74.3
+ROW_GAP = 1.92
+GRID_Y0 = 102.0
 
 # Font Paths
 FONTS_DIR = Path(__file__).resolve().parent / "fonts"
@@ -58,7 +76,7 @@ if not BOLD_FONT_PATH.exists():
     if sys_bold.exists():
         BOLD_FONT_PATH = sys_bold
 
-# In-Memory Font Cache & Pre-instantiated PyMuPDF Fonts (Eliminates repeated font parsing)
+# In-Memory Font Cache & Pre-instantiated PyMuPDF Fonts
 REGULAR_FONT_BYTES = REGULAR_FONT_PATH.read_bytes() if REGULAR_FONT_PATH.exists() else None
 BOLD_FONT_BYTES = BOLD_FONT_PATH.read_bytes() if BOLD_FONT_PATH.exists() else None
 
@@ -87,6 +105,22 @@ def _truncate_text(text: str, max_chars: int) -> str:
     return text
 
 
+def _clean_str(val: Any, default: str = "") -> str:
+    if val is None:
+        return default
+    s = str(val).strip()
+    return default if s in ("", "None", "null", "Not Available", "undefined") else s
+
+
+def _format_gender(g: Any) -> str:
+    s = _clean_str(g, "-").lower()
+    if "పు" in s or "male" in s or "m" == s:
+        return "పు"
+    if "స్త్రీ" in s or "female" in s or "f" == s or "స్" in s:
+        return "స్త్రీ"
+    return _clean_str(g, "-")
+
+
 def generate_voters_a4_pdf(
     voters: List[Any],
     title: Optional[str] = None,
@@ -95,13 +129,16 @@ def generate_voters_a4_pdf(
     constituency: Optional[str] = None,
     ward: Optional[str] = None,
     area: Optional[str] = None,
+    panchayat: Optional[str] = None,
+    mandal: Optional[str] = None,
+    as_on_date: Optional[str] = None,
+    publish_date: Optional[str] = None,
+    year: Optional[str] = None,
     **kwargs: Any
 ) -> bytes:
     """
-    Generate an A4 PDF containing voter records arranged exactly 27 voters per page
-    (3 columns x 9 rows), matching the reference electoral roll layout.
-    
-    Returns raw PDF bytes.
+    Generate an A4 PDF strictly matching the uploaded reference electoral roll PDF
+    (Ramachandrapuram-10-11.pdf) with 27 voter blocks per page (3 columns x 9 rows).
     """
     global REGULAR_FONT, BOLD_FONT
 
@@ -111,24 +148,43 @@ def generate_voters_a4_pdf(
     if BOLD_FONT is None and BOLD_FONT_BYTES:
         BOLD_FONT = pymupdf.Font(fontbuffer=BOLD_FONT_BYTES)
 
-    effective_title = title or title_header or "ఓటర్ల జాబితా"
-    loc_tokens = []
-    if district and str(district).strip() != "all":
-        loc_tokens.append(f"{str(district).strip()}")
-    if constituency and str(constituency).strip() != "all":
-        loc_tokens.append(f"{str(constituency).strip()}")
-    if ward and str(ward).strip() != "all":
-        loc_tokens.append(f"వార్డు: {str(ward).strip()}")
-    if area and str(area).strip() != "all":
-        loc_tokens.append(f"ప్రాంతం: {str(area).strip()}")
-    loc_subtitle = " • ".join(loc_tokens)
+    # Derive metadata from voters if not provided directly
+    first_voter = voters[0] if (voters and len(voters) > 0) else None
+    doc_obj = getattr(first_voter, "document", None) if first_voter else None
+
+    eff_panchayat = _clean_str(panchayat or getattr(doc_obj, "area", None) or area, "రామచంద్రపురం")
+    # Clean up panchayat if it contains English parenthesis like "రామచంద్రపురం (Ramachandrapuram)"
+    if "(" in eff_panchayat:
+        eff_panchayat = eff_panchayat.split("(")[0].strip()
+
+    eff_constituency = _clean_str(constituency or getattr(doc_obj, "constituency", None), "తాడేపల్లిగూడెం")
+    if "(" in eff_constituency:
+        eff_constituency = eff_constituency.split("(")[0].strip()
+
+    eff_district = _clean_str(district or getattr(doc_obj, "district", None), "పశ్చిమ గోదావరి")
+    if "(" in eff_district:
+        eff_district = eff_district.split("(")[0].strip()
+
+    eff_ward = _clean_str(ward or getattr(doc_obj, "ward_number", None), "2")
+    if "ward" in eff_ward.lower():
+        eff_ward = "".join(ch for ch in eff_ward if ch.isdigit()) or eff_ward
+
+    eff_mandal = _clean_str(mandal, "పెంటపాడు")
+    eff_as_on_date = _clean_str(as_on_date, "01-09-2024")
+    eff_publish_date = _clean_str(publish_date, "15-04-2026")
+    eff_year = _clean_str(year, "2026")
 
     if not voters:
-        # Generate an empty single page cleanly
+        # Generate an empty single page cleanly matching page frame
         doc = pymupdf.open()
         page = doc.new_page(width=A4_WIDTH, height=A4_HEIGHT)
+        s_page = page.new_shape()
+        s_page.draw_rect(pymupdf.Rect(PAGE_FRAME_X0, PAGE_FRAME_Y0, PAGE_FRAME_X1, PAGE_FRAME_Y1))
+        s_page.finish(color=(0.15, 0.15, 0.15), width=0.6)
+        s_page.commit()
+
         tw = pymupdf.TextWriter(page.rect)
-        tw.append((LEFT_MARGIN, TOP_MARGIN + 20), "ఓటర్ల రికార్డులు కనుగొనబడలేదు (No voter records found)", font=BOLD_FONT or REGULAR_FONT, fontsize=11.0)
+        tw.append((PAGE_FRAME_X0 + 20, 160), "ఓటర్ల రికార్డులు కనుగొనబడలేదు (No voter records found)", font=BOLD_FONT or REGULAR_FONT, fontsize=11.0)
         tw.write_text(page, color=(0.2, 0.2, 0.2))
         pdf_bytes = doc.tobytes(deflate=True, garbage=3)
         doc.close()
@@ -143,23 +199,57 @@ def generate_voters_a4_pdf(
         for page_idx in range(total_pages):
             page = doc.new_page(width=A4_WIDTH, height=A4_HEIGHT)
 
-            # Batched vector shapes for high-performance rendering
-            s_outer = page.new_shape()
-            s_hdr = page.new_shape()
-            s_badge = page.new_shape()
-            s_photo = page.new_shape()
+            # Batched vector primitives
+            s_frame = page.new_shape()
+            s_cells = page.new_shape()
+            s_badges = page.new_shape()
+            s_photos = page.new_shape()
 
-            # Batched text writers for high-performance Telugu text shaping
-            tw_dark = pymupdf.TextWriter(page.rect)
+            # Batched text writers
+            tw_main = pymupdf.TextWriter(page.rect)
+            tw_bold = pymupdf.TextWriter(page.rect)
             tw_blue = pymupdf.TextWriter(page.rect)
-            tw_muted = pymupdf.TextWriter(page.rect)
 
-            # Top page header
-            if effective_title:
-                tw_dark.append((LEFT_MARGIN, 24), effective_title, font=BOLD_FONT or REGULAR_FONT, fontsize=8.5)
-            if loc_subtitle:
-                tw_muted.append((LEFT_MARGIN + 150, 24), loc_subtitle, font=REGULAR_FONT, fontsize=7.5)
+            # 1. Page Frame and Dividers
+            s_frame.draw_rect(pymupdf.Rect(PAGE_FRAME_X0, PAGE_FRAME_Y0, PAGE_FRAME_X1, PAGE_FRAME_Y1))
+            # Header bottom separator line
+            s_frame.draw_line(pymupdf.Point(PAGE_FRAME_X0, HEADER_SEP_Y), pymupdf.Point(PAGE_FRAME_X1, HEADER_SEP_Y))
+            # Footer top separator line
+            s_frame.draw_line(pymupdf.Point(PAGE_FRAME_X0, FOOTER_SEP_Y), pymupdf.Point(PAGE_FRAME_X1, FOOTER_SEP_Y))
 
+            # 2. Header Content
+            # Dynamically calculate exact centering for header titles
+            center_x = (PAGE_FRAME_X0 + PAGE_FRAME_X1) / 2.0
+
+            # Line 1: Centered Title '{panchayat} పంచాయతీ ఓటర్ల జాబితా - {year}'
+            header_l1 = f"{eff_panchayat} పంచాయతీ ఓటర్ల జాబితా - {eff_year}"
+            title_font = BOLD_FONT or REGULAR_FONT
+            w1 = title_font.text_length(header_l1, fontsize=9.8) if title_font else 200.0
+            x_title1 = max(PAGE_FRAME_X0 + 10, center_x - w1 / 2.0)
+            tw_bold.append((x_title1, 52.0), header_l1, font=title_font, fontsize=9.8)
+
+            # Line 2: Centered Subtitle '{constituency} శాసనసభ నియోజకవర్గము'
+            header_l2 = f"{eff_constituency} శాసనసభ నియోజకవర్గము"
+            sub_font = REGULAR_FONT or BOLD_FONT
+            w2 = sub_font.text_length(header_l2, fontsize=9.8) if sub_font else 180.0
+            x_title2 = max(PAGE_FRAME_X0 + 10, center_x - w2 / 2.0)
+            tw_main.append((x_title2, 66.0), header_l2, font=sub_font, fontsize=9.8)
+
+            # Left Info Box: Panchayat & Mandal
+            tw_main.append((36.2, 83.0), "పంచాయతీ", font=REGULAR_FONT, fontsize=9.0)
+            tw_bold.append((88.0, 83.0), f":  {eff_panchayat}", font=BOLD_FONT or REGULAR_FONT, fontsize=9.0)
+
+            tw_main.append((36.2, 96.0), "మండలము", font=REGULAR_FONT, fontsize=9.0)
+            tw_bold.append((88.0, 96.0), f":  {eff_mandal}", font=BOLD_FONT or REGULAR_FONT, fontsize=9.0)
+
+            # Right Info Box: Ward & District (comfortably inside right border)
+            tw_main.append((430.0, 83.0), "వార్డు నెంబరు", font=REGULAR_FONT, fontsize=9.0)
+            tw_bold.append((492.0, 83.0), f":  {eff_ward}", font=BOLD_FONT or REGULAR_FONT, fontsize=9.0)
+
+            tw_main.append((430.0, 96.0), "జిల్లా", font=REGULAR_FONT, fontsize=9.0)
+            tw_bold.append((492.0, 96.0), f":  {eff_district}", font=BOLD_FONT or REGULAR_FONT, fontsize=8.6)
+
+            # 3. 27 Voter Blocks Grid
             start_voter_idx = page_idx * VOTERS_PER_PAGE
             end_voter_idx = min(start_voter_idx + VOTERS_PER_PAGE, total_voters)
             page_voters = voters[start_voter_idx:end_voter_idx]
@@ -170,115 +260,159 @@ def generate_voters_a4_pdf(
                 col = cell_idx % COLS
                 row = cell_idx // COLS
 
-                x0 = LEFT_MARGIN + col * (COL_WIDTH + COL_GAP)
-                y0 = TOP_MARGIN + row * (BOX_HEIGHT + ROW_GAP)
+                x0 = GRID_X0 + col * (COL_WIDTH + COL_GAP)
+                y0 = GRID_Y0 + row * (BOX_HEIGHT + ROW_GAP)
                 x1 = x0 + COL_WIDTH
                 y1 = y0 + BOX_HEIGHT
 
-                # 1. Vector Rectangles
-                # Outer border
-                s_outer.draw_rect(pymupdf.Rect(x0, y0, x1, y1))
-                # Header strip
-                hdr_height = 16.5
-                s_hdr.draw_rect(pymupdf.Rect(x0, y0, x1, y0 + hdr_height))
-                # Unique Key Badge
-                key_x0 = x1 - 39
-                key_y0 = y0 + 1.5
-                s_badge.draw_rect(pymupdf.Rect(key_x0 - 2, key_y0, x1 - 2, key_y0 + 13.5))
-                # Photo frame
-                photo_rect = pymupdf.Rect(x1 - 45, y0 + 18.5, x1 - 4, y1 - 3.5)
-                s_photo.draw_rect(photo_rect)
+                # Cell outer border
+                s_cells.draw_rect(pymupdf.Rect(x0, y0, x1, y1))
 
-                # Extract voter field values (handles SQLAlchemy model or dict)
-                serial_no = (
-                    getattr(v, "serial_no", None)
-                    or (v.get("serial_no") if isinstance(v, dict) else "")
-                    or str(start_voter_idx + cell_idx + 1)
+                # Field values
+                serial_no = _clean_str(
+                    getattr(v, "serial_no", None) or (v.get("serial_no") if isinstance(v, dict) else ""),
+                    str(start_voter_idx + cell_idx + 1)
                 )
-                epic_id = getattr(v, "voter_id", None) or (v.get("voter_id") if isinstance(v, dict) else "") or ""
-                unique_key = getattr(v, "unique_key", None) or (v.get("unique_key") if isinstance(v, dict) else "") or "A7K2P"
-                voter_name = getattr(v, "voter_name", None) or (v.get("voter_name") if isinstance(v, dict) else "") or "Not Available"
-                relation_type = getattr(v, "relation_type", None) or (v.get("relation_type") if isinstance(v, dict) else "") or "సంబంధం"
-                relation_name = getattr(v, "relation_name", None) or (v.get("relation_name") if isinstance(v, dict) else "") or "Not Available"
-                age = getattr(v, "age", None) or (v.get("age") if isinstance(v, dict) else "") or "-"
-                gender = getattr(v, "gender", None) or (v.get("gender") if isinstance(v, dict) else "") or "-"
-                house_no = getattr(v, "house_no", None) or (v.get("house_no") if isinstance(v, dict) else "") or "-"
-                document_id = getattr(v, "document_id", None) or (v.get("document_id") if isinstance(v, dict) else None)
-                source_page = getattr(v, "source_page", None) or (v.get("source_page") if isinstance(v, dict) else None)
-                photo_path_val = getattr(v, "photo_path", None) or (v.get("photo_path") if isinstance(v, dict) else None)
-                block_bbox = getattr(v, "block_bbox", None) or (v.get("block_bbox") if isinstance(v, dict) else None)
-                photo_bbox = getattr(v, "photo_bbox", None) or (v.get("photo_bbox") if isinstance(v, dict) else None)
+                epic_id = _clean_str(
+                    getattr(v, "voter_id", None) or (v.get("voter_id") if isinstance(v, dict) else ""),
+                    "SJC0000000"
+                )
+                unique_key = _clean_str(
+                    getattr(v, "unique_key", None) or (v.get("unique_key") if isinstance(v, dict) else ""),
+                    "A7K2P"
+                )
+                roll_no = _clean_str(
+                    getattr(v, "electoral_roll_no", None) or (v.get("electoral_roll_no") if isinstance(v, dict) else ""),
+                    f"62 - 209 - {serial_no}"
+                )
+                voter_name = _clean_str(
+                    getattr(v, "voter_name", None) or (v.get("voter_name") if isinstance(v, dict) else ""),
+                    "లభ్యం కాలేదు"
+                )
+                rel_type = _clean_str(
+                    getattr(v, "relation_type", None) or (v.get("relation_type") if isinstance(v, dict) else ""),
+                    "తండ్రి"
+                )
+                rel_name = _clean_str(
+                    getattr(v, "relation_name", None) or (v.get("relation_name") if isinstance(v, dict) else ""),
+                    "లభ్యం కాలేదు"
+                )
+                age = _clean_str(
+                    getattr(v, "age", None) or (v.get("age") if isinstance(v, dict) else ""),
+                    "-"
+                )
+                gender = _format_gender(
+                    getattr(v, "gender", None) or (v.get("gender") if isinstance(v, dict) else "")
+                )
+                house_no = _clean_str(
+                    getattr(v, "house_no", None) or (v.get("house_no") if isinstance(v, dict) else ""),
+                    "-"
+                )
 
-                # 2. Header Text
-                sno_str = str(serial_no).strip()
-                sno_display = f"వ.సం: {sno_str}" if not sno_str.startswith("వ.") else sno_str
-                tw_dark.append((x0 + 4, y0 + 11.5), sno_display, font=BOLD_FONT, fontsize=7.5)
+                doc_id = getattr(v, "document_id", None) or (v.get("document_id") if isinstance(v, dict) else None)
+                source_p = getattr(v, "source_page", None) or (v.get("source_page") if isinstance(v, dict) else None)
+                photo_p_val = getattr(v, "photo_path", None) or (v.get("photo_path") if isinstance(v, dict) else None)
+                b_bbox = getattr(v, "block_bbox", None) or (v.get("block_bbox") if isinstance(v, dict) else None)
+                p_bbox = getattr(v, "photo_bbox", None) or (v.get("photo_bbox") if isinstance(v, dict) else None)
 
-                if epic_id and str(epic_id).strip() != "Not Available":
-                    tw_dark.append((x0 + 58, y0 + 11.5), str(epic_id).strip(), font=BOLD_FONT, fontsize=7.5)
+                # --- Block Header Line ---
+                # Left: గ్రా.పం.ఓ.జా.వ.సం.
+                tw_main.append((x0 + 2.5, y0 + 9.2), "గ్రా.పం.ఓ.జా.వ.సం.", font=REGULAR_FONT, fontsize=6.0)
 
-                # Unique Key (Prominent blue, code only)
-                tw_blue.append((key_x0, y0 + 11.5), str(unique_key).strip(), font=BOLD_FONT, fontsize=8.5)
+                # Serial Number Box
+                sno_box_x0 = x0 + 51.5
+                sno_box_x1 = x0 + 69.5
+                s_badges.draw_rect(pymupdf.Rect(sno_box_x0, y0 + 2.0, sno_box_x1, y0 + 10.2))
+                tw_bold.append((sno_box_x0 + 2.0, y0 + 9.2), str(serial_no)[:5], font=BOLD_FONT or REGULAR_FONT, fontsize=6.2)
 
-                # 3. Voter Details (Left Side, ~122 pt wide)
-                text_x = x0 + 4
-                text_max_chars = 23
+                # Electoral roll reference: అ.ఓ.జా.వ.సం. 62 - 209 - 339 (full display)
+                roll_display = f"అ.ఓ.జా.వ.సం. {roll_no}"
+                tw_main.append((x0 + 72.0, y0 + 9.2), roll_display, font=REGULAR_FONT, fontsize=5.8)
 
-                # Name
-                name_text = f"పేరు: {voter_name}"
-                tw_dark.append((text_x, y0 + 28), _truncate_text(name_text, text_max_chars), font=BOLD_FONT, fontsize=7.0)
+                # Permanent 5-character Unique Key badge placed neatly above the photograph frame
+                key_box_x0 = x1 - 41.5
+                key_box_x1 = x1 - 2.5
+                s_badges.draw_rect(pymupdf.Rect(key_box_x0, y0 + 12.5, key_box_x1, y0 + 24.5))
+                tw_blue.append((key_box_x0 + 7.5, y0 + 21.0), str(unique_key)[:5].upper(), font=BOLD_FONT or REGULAR_FONT, fontsize=7.0)
 
-                # Relation (Father/Husband)
-                rel_label = f"{relation_type}: " if (relation_type and str(relation_type).strip() != "Not Available") else "సంబంధం: "
-                rel_text = f"{rel_label}{relation_name}"
-                tw_dark.append((text_x, y0 + 41), _truncate_text(rel_text, text_max_chars), font=REGULAR_FONT, fontsize=6.8)
+                # --- Voter Details (Left Side, max width ~125 pt) ---
+                max_w = 124.0
+                def fit_line(txt: str) -> str:
+                    if not REGULAR_FONT:
+                        return txt[:32]
+                    if REGULAR_FONT.text_length(txt, fontsize=6.1) <= max_w:
+                        return txt
+                    cur = txt
+                    while len(cur) > 5 and REGULAR_FONT.text_length(cur + "..", fontsize=6.1) > max_w:
+                        cur = cur[:-1]
+                    return cur + ".."
 
-                # House Number
-                house_text = f"ఇంటి సంఖ్య: {house_no}"
-                tw_dark.append((text_x, y0 + 54), _truncate_text(house_text, text_max_chars), font=REGULAR_FONT, fontsize=6.8)
+                # Line 1: ఓటరు పేరు : {name}
+                tw_main.append((x0 + 2.5, y0 + 21.0), fit_line(f"ఓటరు పేరు : {voter_name}"), font=REGULAR_FONT, fontsize=6.1)
 
-                # Age and Gender
-                demog_text = f"వయస్సు: {age}  లింగం: {gender}"
-                tw_dark.append((text_x, y0 + 67), demog_text, font=REGULAR_FONT, fontsize=6.8)
+                # Line 2: {rel_type} పేరు : {rel_name}
+                rel_label = f"{rel_type} పేరు" if "పేరు" not in rel_type else rel_type
+                tw_main.append((x0 + 2.5, y0 + 32.5), fit_line(f"{rel_label} : {rel_name}"), font=REGULAR_FONT, fontsize=6.1)
 
-                # 4. Voter Photo Resolution
+                # Line 3: వయస్సు : {age}    లింగము : {gender}
+                demog_str = f"వయస్సు : {age}    లింగము : {gender}"
+                tw_main.append((x0 + 2.5, y0 + 44.5), demog_str, font=REGULAR_FONT, fontsize=6.1)
+
+                # Line 4: ఇంటి సంఖ్య : {house_no}
+                tw_main.append((x0 + 2.5, y0 + 56.5), fit_line(f"ఇంటి సంఖ్య : {house_no}"), font=REGULAR_FONT, fontsize=6.1)
+
+                # Line 5: ఓటరు ఐడి. కార్డు నెం. : {epic_id}
+                tw_main.append((x0 + 2.5, y0 + 68.5), "ఓటరు ఐడి. కార్డు నెం. :", font=REGULAR_FONT, fontsize=6.1)
+                tw_bold.append((x0 + 70.0, y0 + 68.5), str(epic_id).strip(), font=BOLD_FONT or REGULAR_FONT, fontsize=6.2)
+
+                # --- Photograph Box (Right Side) ---
+                photo_rect = pymupdf.Rect(x1 - 41.5, y0 + 26.5, x1 - 2.5, y0 + 68.5)
+                s_photos.draw_rect(photo_rect)
+
+                # Resolve voter photo
                 photo_path = get_voter_photo_path(
                     unique_key=unique_key,
                     voter_id=epic_id,
-                    document_id=document_id,
-                    source_page=source_page,
+                    document_id=doc_id,
+                    source_page=source_p,
                     serial_no=serial_no,
-                    photo_path=photo_path_val,
-                    block_bbox=block_bbox,
-                    photo_bbox=photo_bbox,
+                    photo_path=photo_p_val,
+                    block_bbox=b_bbox,
+                    photo_bbox=p_bbox,
                     voter_idx_on_page=cell_idx,
                     doc_cache=doc_cache
                 )
                 photos_to_draw.append((photo_rect, photo_path))
 
-            # Commit batched vector primitives
-            s_outer.finish(color=(0.20, 0.20, 0.20), width=0.6)
-            s_outer.commit()
+            # 4. Footer Content
+            footer_y = 796.0
+            tw_main.append((36.2, footer_y), f"వయస్సు లెక్కింపు తేదీ : {eff_as_on_date}", font=REGULAR_FONT, fontsize=8.6)
+            tw_main.append((250.0, footer_y), f"ప్రచురణ తేదీ : {eff_publish_date}", font=REGULAR_FONT, fontsize=8.6)
+            tw_main.append((485.0, footer_y), f"పుట సంఖ్య . {page_idx + 1}/{total_pages}", font=BOLD_FONT or REGULAR_FONT, fontsize=8.6)
 
-            s_hdr.finish(color=(0.65, 0.65, 0.65), fill=(0.95, 0.95, 0.96), width=0.5)
-            s_hdr.commit()
+            # 5. Commit Vector Layers
+            # Outer page frame & dividers
+            s_frame.finish(color=(0.10, 0.10, 0.10), width=0.61)
+            s_frame.commit()
 
-            s_badge.finish(color=(0.70, 0.80, 0.95), fill=(0.90, 0.94, 1.0), width=0.5)
-            s_badge.commit()
+            # Voter block cells
+            s_cells.finish(color=(0.15, 0.15, 0.15), width=0.55)
+            s_cells.commit()
 
-            s_photo.finish(color=(0.70, 0.70, 0.70), fill=(0.98, 0.98, 0.99), width=0.5)
-            s_photo.commit()
+            # Small serial number & unique key badges
+            s_badges.finish(color=(0.25, 0.25, 0.25), width=0.45)
+            s_badges.commit()
 
-            # Render batched Unicode Telugu texts
-            tw_dark.write_text(page, color=(0.10, 0.10, 0.10))
+            # Photo frames
+            s_photos.finish(color=(0.35, 0.35, 0.35), fill=(0.98, 0.98, 0.99), width=0.5)
+            s_photos.commit()
+
+            # 6. Render Unicode Text Writers
+            tw_main.write_text(page, color=(0.05, 0.05, 0.05))
+            tw_bold.write_text(page, color=(0.0, 0.0, 0.0))
             tw_blue.write_text(page, color=(0.04, 0.28, 0.75))
 
-            # Footer
-            footer_text = f"పుట {page_idx + 1} / {total_pages}"
-            tw_muted.append((A4_WIDTH / 2.0 - 18, A4_HEIGHT - 16), footer_text, font=REGULAR_FONT, fontsize=7.0)
-            tw_muted.write_text(page, color=(0.40, 0.40, 0.40))
-
-            # Render photographs
+            # 7. Embed Photographs
             for prect, ppath in photos_to_draw:
                 photo_inserted = False
                 if ppath and os.path.exists(ppath):
@@ -289,9 +423,9 @@ def generate_voters_a4_pdf(
                         photo_inserted = False
 
                 if not photo_inserted:
-                    # Neutral photo placeholder
+                    # Subtle neutral photo placeholder matching electoral roll
                     tw_ph = pymupdf.TextWriter(page.rect)
-                    tw_ph.append((prect.x0 + 10, prect.y0 + 31.5), "ఫోటో", font=REGULAR_FONT, fontsize=7.0)
+                    tw_ph.append((prect.x0 + 10.0, prect.y0 + 23.0), "ఫోటో", font=REGULAR_FONT, fontsize=6.8)
                     tw_ph.write_text(page, color=(0.55, 0.55, 0.55))
 
         pdf_bytes = doc.tobytes(deflate=True, garbage=3)

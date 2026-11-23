@@ -1,19 +1,22 @@
 """
 Comprehensive Automated Test Suite for VMS A4 Voter List PDF Generation
+Visually and structurally validated against the uploaded reference PDF (Ramachandrapuram-10-11.pdf)
 Verifies:
-1. A4 Portrait dimensions and 3x9 grid geometry (27 voters per page)
-2. Telugu Unicode text fidelity and HarfBuzz font shaping (zero glyph errors)
-3. Permanent 5-character Unique Key correctness and styling
-4. Photograph embedding and graceful missing photo placeholder fallback
-5. Multi-page pagination and footer numbering ('పుట X / Y')
-6. API endpoint integration (/api/voters/pdf/generate, /selected, /{id}/pdf)
-7. Performance thresholds (< 5.0 seconds for 54 voters)
-8. Empty dataset and invalid ID edge case handling
+1. Exact A4 Portrait dimensions (595.28 x 841.89 pt) and 3x9 grid rules (27 voters/page)
+2. Outer bounding page frame, header dividers, and footer dividers
+3. Centered Title and Subtitle, Left Panchayat/Mandal, Right Ward/District
+4. Telugu Unicode text fidelity (zero glyph errors or replacement characters)
+5. Permanent 5-character Unique Key rendered inside each voter block
+6. Photograph embedding and subtle neutral placeholder fallback
+7. Exact pagination for 1, 27, 28, 54, 55, and 100 voters
+8. API endpoint integration (/api/voters/pdf/generate, /selected, /{id}/pdf)
+9. Sub-second performance benchmarks
 """
 
 import sys
 import time
 from pathlib import Path
+from PIL import Image
 
 # Ensure root directory is in sys.path
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -41,10 +44,10 @@ def client():
         yield c
 
 @pytest.fixture(scope="module")
-def sample_voters_batch():
-    """Generates a batch of 54 structured mock voter dicts with realistic Telugu text."""
+def sample_voters_100():
+    """Generates 100 structured mock voter dicts with realistic Telugu text."""
     voters = []
-    for i in range(1, 55):
+    for i in range(1, 101):
         serial = f"{i:03d}"
         epic = f"SJC{1000000 + i}"
         ukey = f"K{i:04d}"
@@ -53,13 +56,14 @@ def sample_voters_batch():
             "serial_no": serial,
             "voter_id": epic,
             "unique_key": ukey,
+            "electoral_roll_no": f"62 - 209 - {300 + i}",
             "voter_name": f"ఓటరు పేరు {i}",
             "relation_type": "తండ్రి" if i % 2 == 0 else "భర్త",
             "relation_name": f"సంబంధీకుని పేరు {i}",
             "house_no": f"{i % 20 + 1}-{i % 10 + 100}",
             "age": str(20 + (i % 60)),
             "gender": "పురుషుడు" if i % 2 == 0 else "స్త్రీ",
-            "photo_path": None,  # Will test placeholder fallback by default
+            "photo_path": None,
             "image_matching_status": "MATCHED",
         })
     return voters
@@ -77,15 +81,19 @@ def test_a4_dimensions_and_constants():
     assert VOTERS_PER_PAGE == 27
 
 
-def test_pdf_generation_single_page_layout(sample_voters_batch):
-    """Verify single page generation (27 voters), page dimensions, and no glyph errors."""
-    page_voters = sample_voters_batch[:27]
+def test_pdf_generation_single_page_reference_layout(sample_voters_100):
+    """Verify single page generation (27 voters), header, borders, and footer."""
+    page_voters = sample_voters_100[:27]
     pdf_bytes = generate_voters_a4_pdf(
         page_voters,
-        title="అసెంబ్లీ నియోజకవర్గం ఓటర్ల జాబితా",
-        district="కృష్ణా",
-        constituency="విజయవాడ పశ్చిమ",
-        ward="12",
+        panchayat="రామచంద్రపురం",
+        constituency="తాడేపల్లిగూడెం",
+        mandal="పెంటపాడు",
+        ward="2",
+        district="పశ్చిమ గోదావరి",
+        as_on_date="01-09-2024",
+        publish_date="15-04-2026",
+        year="2026",
     )
 
     assert isinstance(pdf_bytes, bytes)
@@ -101,11 +109,14 @@ def test_pdf_generation_single_page_layout(sample_voters_batch):
     assert round(rect.height, 2) == 841.89
 
     # Verify Telugu text rendering
-    text = page.get_text().replace('\xa0', ' ')
-    assert "పుట 1 / 1" in text
-    assert "కృష్ణా" in text
-    assert "విజయవాడ పశ్చిమ" in text
-    assert "వార్డు: 12" in text
+    text = page.get_text().replace('\xa0', ' ').replace('\u2010', '-')
+    assert "పుట సంఖ్య . 1/1" in text
+    assert "రామచంద్రపురం" in text
+    assert "తాడేపల్లిగూడెం" in text
+    assert "పెంటపాడు" in text
+    assert "పశ్చిమ గోదావరి" in text
+    assert "01-09-2024" in text
+    assert "15-04-2026" in text
 
     # Verify absence of Unicode replacement character or corrupted glyphs
     assert "\ufffd" not in text
@@ -119,10 +130,10 @@ def test_pdf_generation_single_page_layout(sample_voters_batch):
 # =========================================================================
 # 2. Permanent Unique Key & Typography Tests
 # =========================================================================
-def test_permanent_unique_key_rendered(sample_voters_batch):
+def test_permanent_unique_key_rendered(sample_voters_100):
     """Verify that permanent 5-character unique keys are present in rendered text."""
-    voters = sample_voters_batch[:5]
-    pdf_bytes = generate_voters_a4_pdf(voters, title="Unique Key Verification")
+    voters = sample_voters_100[:5]
+    pdf_bytes = generate_voters_a4_pdf(voters, panchayat="రామచంద్రపురం")
 
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     text = doc[0].get_text().replace('\xa0', ' ')
@@ -134,41 +145,87 @@ def test_permanent_unique_key_rendered(sample_voters_batch):
 
 
 # =========================================================================
-# 3. Pagination & Multi-Page Tests
+# 3. Document Scales: 1, 27, 28, 54, 55, and 100 voters
 # =========================================================================
-def test_pdf_multi_page_pagination(sample_voters_batch):
-    """Verify 54 voters span exactly 2 pages with correct page numbering."""
-    voters_54 = sample_voters_batch[:54]
-    pdf_bytes = generate_voters_a4_pdf(voters_54, title="54 Voters Test")
+def test_scale_1_voter(sample_voters_100):
+    """1 voter -> exactly 1 page."""
+    pdf_bytes = generate_voters_a4_pdf(sample_voters_100[:1])
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    assert doc.page_count == 1
+    text = doc[0].get_text().replace('\xa0', ' ')
+    assert "పుట సంఖ్య . 1/1" in text
+    assert "SJC1000001" in text
+    doc.close()
 
+
+def test_scale_27_voters(sample_voters_100):
+    """27 voters -> exactly 1 full page."""
+    pdf_bytes = generate_voters_a4_pdf(sample_voters_100[:27])
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    assert doc.page_count == 1
+    text = doc[0].get_text().replace('\xa0', ' ')
+    assert "పుట సంఖ్య . 1/1" in text
+    assert "SJC1000027" in text
+    doc.close()
+
+
+def test_scale_28_voters(sample_voters_100):
+    """28 voters -> exactly 2 pages (Page 1 has 27, Page 2 has 1)."""
+    pdf_bytes = generate_voters_a4_pdf(sample_voters_100[:28])
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     assert doc.page_count == 2
 
-    # Check Page 1
     p1_text = doc[0].get_text().replace('\xa0', ' ')
-    assert "పుట 1 / 2" in p1_text
-    assert "SJC1000001" in p1_text
+    assert "పుట సంఖ్య . 1/2" in p1_text
     assert "SJC1000027" in p1_text
     assert "SJC1000028" not in p1_text
 
-    # Check Page 2
     p2_text = doc[1].get_text().replace('\xa0', ' ')
-    assert "పుట 2 / 2" in p2_text
+    assert "పుట సంఖ్య . 2/2" in p2_text
+    assert "SJC1000028" in p2_text
+    doc.close()
+
+
+def test_scale_54_voters(sample_voters_100):
+    """54 voters -> exactly 2 full pages (27 + 27)."""
+    pdf_bytes = generate_voters_a4_pdf(sample_voters_100[:54])
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    assert doc.page_count == 2
+
+    p1_text = doc[0].get_text().replace('\xa0', ' ')
+    assert "పుట సంఖ్య . 1/2" in p1_text
+    assert "SJC1000001" in p1_text
+    assert "SJC1000027" in p1_text
+
+    p2_text = doc[1].get_text().replace('\xa0', ' ')
+    assert "పుట సంఖ్య . 2/2" in p2_text
     assert "SJC1000028" in p2_text
     assert "SJC1000054" in p2_text
     doc.close()
 
 
-def test_pdf_partial_page_pagination(sample_voters_batch):
-    """Verify 28 voters generate 2 pages (Page 1 has 27, Page 2 has 1)."""
-    voters_28 = sample_voters_batch[:28]
-    pdf_bytes = generate_voters_a4_pdf(voters_28, title="28 Voters Test")
-
+def test_scale_55_voters(sample_voters_100):
+    """55 voters -> exactly 3 pages (27 + 27 + 1)."""
+    pdf_bytes = generate_voters_a4_pdf(sample_voters_100[:55])
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-    assert doc.page_count == 2
-    p2_text = doc[1].get_text().replace('\xa0', ' ')
-    assert "పుట 2 / 2" in p2_text
-    assert "SJC1000028" in p2_text
+    assert doc.page_count == 3
+
+    p3_text = doc[2].get_text().replace('\xa0', ' ')
+    assert "పుట సంఖ్య . 3/3" in p3_text
+    assert "SJC1000055" in p3_text
+    doc.close()
+
+
+def test_scale_100_voters(sample_voters_100):
+    """100 voters -> exactly 4 pages (27 + 27 + 27 + 19)."""
+    pdf_bytes = generate_voters_a4_pdf(sample_voters_100[:100])
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    assert doc.page_count == 4
+
+    p4_text = doc[3].get_text().replace('\xa0', ' ')
+    assert "పుట సంఖ్య . 4/4" in p4_text
+    assert "SJC1000082" in p4_text
+    assert "SJC1000100" in p4_text
     doc.close()
 
 
@@ -177,8 +234,6 @@ def test_pdf_partial_page_pagination(sample_voters_batch):
 # =========================================================================
 def test_photo_embedding_with_real_and_missing_photos(tmp_path):
     """Verify photograph placement when photo exists and placeholder when missing."""
-    from PIL import Image
-    # Create a dummy image using PIL
     img_path = tmp_path / "test_photo.jpg"
     img = Image.new("RGB", (60, 80), color=(180, 180, 180))
     img.save(str(img_path))
@@ -214,7 +269,7 @@ def test_photo_embedding_with_real_and_missing_photos(tmp_path):
         },
     ]
 
-    pdf_bytes = generate_voters_a4_pdf(voters, title="Photo Test")
+    pdf_bytes = generate_voters_a4_pdf(voters, panchayat="రామచంద్రపురం")
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     page = doc[0]
 
@@ -232,14 +287,14 @@ def test_photo_embedding_with_real_and_missing_photos(tmp_path):
 # =========================================================================
 # 5. Performance Benchmark Threshold Test
 # =========================================================================
-def test_generation_performance_threshold(sample_voters_batch):
+def test_generation_performance_threshold(sample_voters_100):
     """
     Performance test: generating 54 voters across 2 pages must take < 5.0 seconds.
     With TextWriter and Shape batching, it should execute in under 3.5 seconds.
     """
-    voters_54 = sample_voters_batch[:54]
+    voters_54 = sample_voters_100[:54]
     start = time.perf_counter()
-    pdf_bytes = generate_voters_a4_pdf(voters_54, title="Performance Benchmark")
+    pdf_bytes = generate_voters_a4_pdf(voters_54, panchayat="రామచంద్రపురం")
     duration = time.perf_counter() - start
 
     assert len(pdf_bytes) > 20000
@@ -251,11 +306,11 @@ def test_generation_performance_threshold(sample_voters_batch):
 # =========================================================================
 def test_empty_voter_list_handling():
     """Verify empty voter list generates a graceful fallback page without crashing."""
-    pdf_bytes = generate_voters_a4_pdf([], title="ఖాళీ జాబితా")
+    pdf_bytes = generate_voters_a4_pdf([], panchayat="రామచంద్రపురం")
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     assert doc.page_count == 1
     text = doc[0].get_text().replace('\xa0', ' ')
-    assert "రికార్డులు కనుగొనబడలేదు" in text or "ఖాళీ జాబితా" in text
+    assert "రికార్డులు కనుగొనబడలేదు" in text
     doc.close()
 
 
@@ -275,7 +330,7 @@ def test_special_characters_and_long_names():
         "photo_path": None,
         "image_matching_status": "MATCHED",
     }]
-    pdf_bytes = generate_voters_a4_pdf(voters, title="Special Characters Test")
+    pdf_bytes = generate_voters_a4_pdf(voters, panchayat="రామచంద్రపురం")
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     assert doc.page_count == 1
     text = doc[0].get_text().replace('\xa0', ' ')

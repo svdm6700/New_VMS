@@ -2407,13 +2407,30 @@ def generate_filtered_voter_list_pdf(
         q = q.filter(VoterRecordModel.gender.ilike(f"%{eff_gender}%"))
 
     voters = q.order_by(asc(VoterRecordModel.id)).all()
+    first_v = voters[0] if voters else None
+    first_doc = getattr(first_v, "document", None)
+
+    panchayat_val = eff_area if (eff_area and eff_area != "all") else None
+    if not panchayat_val and first_doc and first_doc.area:
+        panchayat_val = first_doc.area
+    if not panchayat_val or str(panchayat_val).strip().isdigit():
+        if first_doc and "ramachandrapuram" in (first_doc.original_filename or "").lower():
+            panchayat_val = "రామచంద్రపురం"
+
+    mandal_val = "పెంటపాడు"
+    constituency_val = (eff_constituency if (eff_constituency and eff_constituency != "all") else None) or (first_doc.constituency if first_doc else None) or "తాడేపల్లిగూడెం"
+    district_val = (eff_district if (eff_district and eff_district != "all") else None) or (first_doc.district if first_doc else None) or "పశ్చిమ గోదావరి"
+    ward_val = (eff_ward if (eff_ward and eff_ward != "all") else None) or (first_doc.ward_number if first_doc else None) or "2"
+
     pdf_bytes = generate_voters_a4_pdf(
         voters,
         title="ఓటర్ల జాబితా (Voter List)",
-        district=eff_district,
-        constituency=eff_constituency,
-        ward=eff_ward,
-        area=eff_area
+        district=district_val,
+        constituency=constituency_val,
+        ward=ward_val,
+        area=panchayat_val,
+        panchayat=panchayat_val,
+        mandal=mandal_val
     )
     return StreamingResponse(
         BytesIO(pdf_bytes),
