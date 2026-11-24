@@ -98,7 +98,8 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
   const [pdfFilename, setPdfFilename] = useState('voter_list.pdf');
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
-  const [pdfRetryAction, setPdfRetryAction] = useState<(() => void) | null>(null);
+  const [hasPdfRetry, setHasPdfRetry] = useState(false);
+  const pdfRetryActionRef = useRef<(() => void) | null>(null);
   const [pdfProgress, setPdfProgress] = useState<{
     completed_pages: number;
     total_pages: number;
@@ -238,7 +239,8 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
     setPdfFilename(`voter_${key}.pdf`);
     setPdfBlob(null);
     setPdfError(null);
-    setPdfRetryAction(() => () => handlePrintIndividualVoterPdf(voter));
+    pdfRetryActionRef.current = () => handlePrintIndividualVoterPdf(voter);
+    setHasPdfRetry(true);
     setPdfLoading(true);
     setIsPdfModalOpen(true);
     try {
@@ -261,7 +263,8 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
     setPdfFilename(`voters_selected_${selectedVoterIds.length}.pdf`);
     setPdfBlob(null);
     setPdfError(null);
-    setPdfRetryAction(() => () => handleGenerateSelectedPdf());
+    pdfRetryActionRef.current = () => handleGenerateSelectedPdf();
+    setHasPdfRetry(true);
     setPdfLoading(true);
     setIsPdfModalOpen(true);
     try {
@@ -281,7 +284,8 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
     setPdfBlob(null);
     setPdfError(null);
     setPdfProgress(null);
-    setPdfRetryAction(() => () => handleGenerateCurrentPagePdf());
+    pdfRetryActionRef.current = () => handleGenerateCurrentPagePdf();
+    setHasPdfRetry(true);
     setPdfLoading(true);
     setIsPdfModalOpen(true);
     try {
@@ -354,7 +358,8 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
     setPdfBlob(null);
     setPdfError(null);
     setPdfProgress(null);
-    setPdfRetryAction(() => () => handleGenerateCompletePdf());
+    pdfRetryActionRef.current = () => handleGenerateCompletePdf();
+    setHasPdfRetry(true);
     setPdfLoading(true);
     setIsPdfModalOpen(true);
 
@@ -1212,7 +1217,8 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
           setPdfError(null);
           setPdfProgress(null);
           setCurrentPdfJobId(null);
-          setPdfRetryAction(null);
+          pdfRetryActionRef.current = null;
+          setHasPdfRetry(false);
         }}
         pdfBlob={pdfBlob}
         title={pdfTitle}
@@ -1220,7 +1226,7 @@ export const VoterRecordsTable: React.FC<VoterRecordsTableProps> = ({
         loading={pdfLoading}
         error={pdfError}
         progress={pdfProgress}
-        onRetry={pdfRetryAction || undefined}
+        onRetry={hasPdfRetry ? () => { if (pdfRetryActionRef.current) pdfRetryActionRef.current(); } : undefined}
         onRetryFailedPages={currentPdfJobId ? handleRetryFailedPdfPages : undefined}
       />
 

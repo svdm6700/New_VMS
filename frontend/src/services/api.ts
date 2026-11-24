@@ -101,10 +101,21 @@ api.interceptors.response.use(
     const currentBase = getApiBaseUrl();
     let message = 'An unexpected error occurred.';
 
+    // Safely extract error data even when responseType: 'blob' was requested (PDF exports)
+    let respData = error.response?.data;
+    if (typeof window !== 'undefined' && respData instanceof Blob) {
+      try {
+        const text = await respData.text();
+        respData = JSON.parse(text);
+      } catch {
+        // Response blob is raw binary and not JSON text
+      }
+    }
+
     if (error.code === 'ECONNABORTED' || error.message?.toLowerCase().includes('timeout')) {
       message = `Request Timeout: The server took longer than expected to generate the response (${Math.round((error.config?.timeout || defaultTimeout) / 1000)}s). For large datasets, please use page-wise generation or click Try Again.`;
     } else if (!error.response) {
-      message = `Network Error: Unable to connect to server at ${currentBase}. Please ensure the FastAPI backend is running and network connectivity is active.`;
+      message = `Network Error: Unable to reach server at ${currentBase || 'backend'}. Please ensure the FastAPI backend is running and network connectivity is active.`;
     } else if (error.response.status === 401) {
       // If 401 occurs on a protected route (and not on login), clear stored session if refresh fails
       const originalRequest = error.config;
@@ -129,15 +140,21 @@ api.interceptors.response.use(
           window.dispatchEvent(new Event('auth:unauthorized'));
         }
       }
-      message = error.response.data?.detail || 'Authentication required or session expired.';
-    } else if (error.response?.data?.detail) {
-      if (typeof error.response.data.detail === 'string') {
-        message = error.response.data.detail;
-      } else if (Array.isArray(error.response.data.detail)) {
-        message = error.response.data.detail.map((d: any) => d.msg || JSON.stringify(d)).join(', ');
+      message = (respData && respData.detail) || 'Authentication required or session expired.';
+    } else if (respData?.detail) {
+      if (typeof respData.detail === 'string') {
+        message = respData.detail;
+      } else if (Array.isArray(respData.detail)) {
+        message = respData.detail.map((d: any) => d.msg || JSON.stringify(d)).join(', ');
+      } else if (typeof respData.detail === 'object') {
+        message = respData.detail.message || respData.detail.error || JSON.stringify(respData.detail);
       } else {
-        message = JSON.stringify(error.response.data.detail);
+        message = JSON.stringify(respData.detail);
       }
+    } else if (respData?.message) {
+      message = String(respData.message);
+    } else if (respData?.error) {
+      message = String(respData.error);
     } else if (error.message) {
       message = error.message;
     }

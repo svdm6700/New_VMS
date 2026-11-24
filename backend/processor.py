@@ -93,11 +93,87 @@ Page {page_no}:
     except Exception as exc:
         raise RuntimeError(f"AI processing failed on page {page_no}: {exc}") from exc
 
+SUMMARY_HEADER_KEYWORDS = [
+    "మొత్తం ఓటర్ల వివరాలు", "ఓటర్ల సంఖ్య వివరాలు", "సారాంశం", "సంక్షిప్త సవరణ",
+    "పోలింగ్ కేంద్రం వివరాలు", "పోలింగ్ స్టేషన్ వివరాలు", "విభాగం వివరాలు", "సెక్షన్ వివరాలు",
+    "ప్రారంభ క్రమ సంఖ్య", "ముగింపు క్రమ సంఖ్య", "ఓటర్ల సంక్షిప్త సమాచారం",
+    "నమోదు వివరాలు", "ప్రచురణ వివరాలు", "అధికారి సంతకం", "తుది ప్రచురణ",
+    "మొదటి భాగం", "అనుబంధ జాబితా", "సవరణ జాబితా", "పోలింగ్ కేంద్రము భవనము",
+    "Summary of Electors", "Electors Summary", "Polling Station Details"
+]
+
+NON_VOTER_NAME_BLACKLIST = {
+    "మొత్తం", "మొత్తం ఓటర్లు", "పురుషులు", "స్త్రీలు", "ఇతర", "పురుషులు స్త్రీలు",
+    "మండలము", "జిల్లా", "గ్రామ పంచాయతీ", "శాసనసభ నియోజకవర్గము", "వార్డు నెంబరు",
+    "పోలింగ్ కేంద్రం", "విభాగం", "సెక్షన్", "భాగం నెంబరు", "ప్రచురణ తేదీ", "సవరణ",
+    "పుట సంఖ్య", "ఫోటో", "Photo Available", "Available", "Photo", "Total",
+    "Male", "Female", "Table", "Summary", "Not Available", "నియోజకవర్గం"
+}
+
+def is_summary_or_non_voter_page(text: str) -> bool:
+    """
+    Check if a page is purely summary / statistics / metadata without individual voter cards.
+    Excludes ward summaries, gender count tables, polling station details, and document titles.
+    """
+    clean_t = text or ""
+    epic_count = len(re.findall(r'[A-Z]{2,4}\s*[0-9]{6,8}', clean_t))
+    voter_marker_count = len(re.findall(r'(?:ఓటరు\s*పేరు|ఇంటి\s*సంఖ్య|తండ్రి\s*పేరు|భర్త\s*పేరు)', clean_t))
+
+    has_summary_keyword = any(k.lower() in clean_t.lower() for k in SUMMARY_HEADER_KEYWORDS)
+    has_gender_stats = any(k in clean_t for k in ["పురుషులు", "స్త్రీలు", "మొత్తం"])
+
+    if has_summary_keyword and epic_count < 3:
+        return True
+    if has_gender_stats and epic_count < 2 and voter_marker_count < 3:
+        return True
+    if epic_count == 0 and voter_marker_count < 2:
+        return True
+
+    return False
+
+def is_valid_voter_record(parsed: dict) -> bool:
+    """
+    Strict validation to ensure only legitimate individual voter records are saved.
+    Excludes ward summaries, statistics, header snippets, or empty records.
+    """
+    voter_name = (parsed.get("voter_name") or "").strip()
+    if not voter_name or voter_name == "Not Available" or len(voter_name) < 2:
+        return False
+
+    if voter_name in NON_VOTER_NAME_BLACKLIST:
+        return False
+    if any(bl in voter_name for bl in ["మొత్తం ఓటర్లు", "పోలింగ్ కేంద్రం", "ప్రచురణ తేదీ", "ఫోటో అందుబాటులో"]):
+        return False
+    if re.match(r'^(?:మొత్తం|పురుషులు|స్త్రీలు|వార్డు|జిల్లా|మండలము|పోలింగ్|సెక్షన్|విభాగం|పుట|తేదీ|గ్రామ)\b', voter_name):
+        return False
+
+    voter_id = (parsed.get("voter_id") or "").strip()
+    sno = str(parsed.get("serial_no") or "").strip()
+    rel_name = (parsed.get("relation_name") or "").strip()
+    house = (parsed.get("house_no") or "").strip()
+    age = str(parsed.get("age") or "").strip()
+
+    has_epic = bool(voter_id and voter_id != "Not Available" and re.match(r'^[A-Z]{2,4}[0-9]{6,8}$', voter_id))
+    has_serial_and_details = (
+        sno.isdigit() and int(sno) > 0 and (
+            (rel_name and rel_name != "Not Available" and len(rel_name) >= 2) or
+            (house and house != "Not Available") or
+            (age.isdigit() and 18 <= int(age) <= 125)
+        )
+    )
+
+    return has_epic or has_serial_and_details
+
 def detect_voter_cells(page):
     """
     Detect individual voter block bounding boxes on an electoral roll page.
     Uses vector drawing analysis with text header and geometric fallbacks.
+    Discards summary pages, cover pages, and statistical tables automatically.
     """
+    sample_text = page.get_text("text") or ""
+    if is_summary_or_non_voter_page(sample_text):
+        return []
+
     drawings = page.get_drawings()
     cell_rects = []
     page_rect = page.rect
@@ -143,8 +219,8 @@ def detect_voter_cells(page):
         return headers
 
     # Fallback 2: Standard 3-column x 9-row or 3-column x 10-row grid for standard A4 voter rolls
-    sample_text = page.get_text("text")
-    if any(k in sample_text for k in ["వ.సం", "గ్రా.పం", "వార్డు", "ఓటరు", "ఓటర్", "లింగం", "లింగము"]):
+    voter_marker_count = len(re.findall(r'(?:ఓటరు\s*పేరు|ఇంటి\s*సంఖ్య|తండ్రి|భర్త|[A-Z]{2,4}\s*[0-9]{6,8})', sample_text))
+    if voter_marker_count >= 3 and any(k in sample_text for k in ["వ.సం", "గ్రా.పం", "వార్డు", "ఓటరు", "ఓటర్", "లింగం", "లింగము"]):
         grid_cells = []
         margin_x = 32.0
         margin_top = 38.0
@@ -441,6 +517,8 @@ def parse_voter_blocks(text, page_no):
         if not p.strip() or not any(k in p for k in ['గ్రా.పం.ఓ.జా.వ.సం.', 'వార్డు.ఓ.జా.వ.సం.', 'ార్డు.ఓ.జా.వ.సం.', 'వ.సం']):
             continue
         parsed = parse_voter_cell_text(p, page_no)
+        if not is_valid_voter_record(parsed):
+            continue
         records.append({
             "record_id": int(parsed["serial_no"]) if parsed["serial_no"].isdigit() else len(records) + 1,
             "page": page_no,
@@ -485,6 +563,8 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
                     for c_idx, cell in enumerate(cells):
                         raw_cell_text = page.get_text("text", clip=cell)
                         parsed = parse_voter_cell_text(raw_cell_text, page_no)
+                        if not is_valid_voter_record(parsed):
+                            continue
                         
                         sno_val = parsed["serial_no"]
                         rec_id = int(sno_val) if sno_val.isdigit() else (len(records) + 1)
@@ -588,25 +668,6 @@ def extract_structured_records(pages, tables, doc=None, doc_id=None):
                 })
                 rec_counter += 1
 
-    # Fallback to tables if no key-value records were identified
-    if not records and tables:
-        for t in tables:
-            page_no = t.get("Page", 1)
-            raw = t.get("Telugu / Original", "")
-            if raw and " | " in raw:
-                cells = [c.strip() for c in raw.split(" | ")]
-                fields = [{"field_name": f"స్తంభం {idx+1}", "value": c if c else "Not Available"} for idx, c in enumerate(cells)]
-                records.append({
-                    "record_id": rec_counter,
-                    "page": page_no,
-                    "serial_no": str(rec_counter),
-                    "voter_id": "Not Available",
-                    "image_matching_status": "MISSING",
-                    "title": f"టేబుల్ రికార్డు {rec_counter} (పేజీ {page_no})",
-                    "fields": fields
-                })
-                rec_counter += 1
-                
     return records
 
 
@@ -623,6 +684,10 @@ def extract_single_page_records(doc, page_no: int, doc_id: str):
     text = page.get_text("text") or ""
     records = []
 
+    # Immediately skip summary pages, cover pages, and statistical gender counts
+    if is_summary_or_non_voter_page(text):
+        return []
+
     is_voter_page = any(kw in text for kw in [
         "వ.సం", "గ్రా.పం", "వార్డు", "ఓటరు", "ఓటర్", "లింగం", "లింగము", "ఇంటి సంఖ్య",
         "Sl.No", "S.No", "EPIC", "Voter", "voter"
@@ -635,6 +700,8 @@ def extract_single_page_records(doc, page_no: int, doc_id: str):
             for c_idx, cell in enumerate(cells):
                 raw_cell_text = page.get_text("text", clip=cell)
                 parsed = parse_voter_cell_text(raw_cell_text, page_no)
+                if not is_valid_voter_record(parsed):
+                    continue
 
                 sno_val = parsed["serial_no"]
                 rec_id = int(sno_val) if sno_val.isdigit() else (c_idx + 1)

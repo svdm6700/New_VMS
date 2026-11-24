@@ -1,5 +1,6 @@
 import sys
 import math
+import hashlib
 import uuid
 from uuid import uuid4
 import json
@@ -56,11 +57,11 @@ try:
         PaymentModel, PaymentAuditLogModel,
         UserGeographicAssignmentModel,
         VoterAmountAllocationModel, DistrictModel, ConstituencyModel, WardModel,
-        PdfExportJobModel, PdfExportPageModel
+        PdfExportJobModel, PdfExportPageModel, DocumentDeletionAuditModel
     )
     from backend.logger import (
         backend_logger, system_logger, errors_logger, doc_proc_logger,
-        bulk_proc_logger, pdf_export_logger, frontend_logger, log_event
+        bulk_proc_logger, pdf_export_logger, frontend_logger, doc_deletion_logger, log_event
     )
     from backend.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
     from backend.auth_deps import (
@@ -83,11 +84,11 @@ except ImportError:
         PaymentModel, PaymentAuditLogModel,
         UserGeographicAssignmentModel,
         VoterAmountAllocationModel, DistrictModel, ConstituencyModel, WardModel,
-        PdfExportJobModel, PdfExportPageModel
+        PdfExportJobModel, PdfExportPageModel, DocumentDeletionAuditModel
     )
     from logger import (
         backend_logger, system_logger, errors_logger, doc_proc_logger,
-        bulk_proc_logger, pdf_export_logger, frontend_logger, log_event
+        bulk_proc_logger, pdf_export_logger, frontend_logger, doc_deletion_logger, log_event
     )
     from security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
     from auth_deps import (
@@ -183,21 +184,29 @@ app.add_middleware(
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
-    Ensure all unhandled 500 exceptions return JSON with CORS headers
-    so the frontend receives meaningful error details instead of a network error.
+    Ensure all unhandled 500 exceptions return JSON with compliant CORS headers
+    so the frontend receives meaningful error details instead of a browser network error.
     """
     import traceback
     traceback.print_exc()
     log_event("errors", f"Unhandled Exception on {request.method} {request.url.path}: {str(exc)}", level="ERROR")
+    
+    origin = request.headers.get("origin")
+    headers = {
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Expose-Headers": "Content-Disposition, Content-Type, Content-Length",
+    }
+    if origin:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    else:
+        headers["Access-Control-Allow-Origin"] = "*"
+
     return JSONResponse(
         status_code=500,
         content={"detail": f"Internal Server Error: {str(exc)}"},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Methods": "*",
-        }
+        headers=headers
     )
 
 
@@ -426,6 +435,12 @@ def run_background_extraction(
 
         # Process pages independently and save results immediately per page
         for page_no in pages_to_extract:
+            # Check if document was deleted or cancelled during processing
+            doc_check = db.query(DocumentModel.id).filter(DocumentModel.id == doc_id).first()
+            if not doc_check:
+                log_event(doc_proc_logger, "WARNING", f"Document {doc_id} was deleted during extraction. Aborting background task.", document_id=doc_id)
+                return
+
             page_rec = existing_pages.get(page_no)
             if not page_rec:
                 page_rec = db.query(DocumentPageModel).filter(
@@ -1305,6 +1320,59 @@ def admin_delete_user(
     db.commit()
     return {"status": "deleted", "user_id": user_id}
 
+def validate_geographic_hierarchy(district: str, constituency: str, area: str, ward: str, db: Session) -> Optional[str]:
+    """
+    Validate that district, constituency, area, and ward form a valid hierarchy
+    in Geographic Management. Returns None if valid, or an error string if invalid.
+    Supports both Telugu and English names.
+    """
+    clean_d = district.strip()
+    clean_c = constituency.strip()
+    clean_a = area.strip()
+    clean_w = ward.strip()
+
+    dist_recs = db.query(DistrictModel).all()
+    if not dist_recs:
+        return None
+
+    matched_dist = None
+    for d in dist_recs:
+        if clean_d.lower() in d.name.lower() or d.name.lower() in clean_d.lower():
+            matched_dist = d
+            break
+    if not matched_dist:
+        available = ", ".join(d.name for d in dist_recs)
+        return f"District '{clean_d}' is not recognized in Geographic Management. Available: {available}"
+
+    const_recs = db.query(ConstituencyModel).filter(ConstituencyModel.district_id == matched_dist.id).all()
+    if not const_recs:
+        const_recs = db.query(ConstituencyModel).all()
+
+    matched_const = None
+    for c in const_recs:
+        if clean_c.lower() in c.name.lower() or c.name.lower() in clean_c.lower():
+            matched_const = c
+            break
+    if not matched_const:
+        available = ", ".join(c.name for c in const_recs)
+        return f"Constituency '{clean_c}' is not part of district '{matched_dist.name}'. Available: {available}"
+
+    ward_recs = db.query(WardModel).filter(WardModel.constituency_id == matched_const.id).all()
+    if ward_recs:
+        matched_ward = None
+        for w in ward_recs:
+            w_num_clean = re.sub(r'[^0-9a-zA-Z]', '', w.ward_number.lower())
+            input_w_clean = re.sub(r'[^0-9a-zA-Z]', '', clean_w.lower())
+            if w_num_clean == input_w_clean:
+                matched_ward = w
+                break
+        if not matched_ward:
+            available_w = ", ".join(w.ward_number for w in ward_recs)
+            return f"Ward '{clean_w}' is not configured under constituency '{matched_const.name}'. Configured wards: {available_w}"
+
+    return None
+
+
 # -------------------------------------------------------------
 # 4. Document Upload & Automatic Extraction (With User Ownership)
 # -------------------------------------------------------------
@@ -1351,6 +1419,11 @@ async def upload_document(
     if not clean_ward:
         raise HTTPException(status_code=400, detail="Ward Number (వార్డు నంబర్) is required.")
 
+    # Validate geographic hierarchy against Geographic Management
+    geo_err = validate_geographic_hierarchy(clean_district, clean_constituency, clean_area, clean_ward, db)
+    if geo_err:
+        raise HTTPException(status_code=400, detail=geo_err)
+
     # Geographic restriction check for Admin role
     if not is_super_admin(current_user):
         import json
@@ -1394,6 +1467,7 @@ async def upload_document(
     doc_id = str(uuid.uuid4())
     pdf_path = UPLOAD_DIR / f"{doc_id}.pdf"
 
+    hasher = hashlib.sha256()
     total_size = 0
     try:
         with open(pdf_path, "wb") as f:
@@ -1407,6 +1481,7 @@ async def upload_document(
                     if pdf_path.exists():
                         pdf_path.unlink()
                     raise HTTPException(status_code=413, detail="Maximum PDF file size is 300 MB.")
+                hasher.update(chunk)
                 f.write(chunk)
     except HTTPException:
         raise
@@ -1420,16 +1495,120 @@ async def upload_document(
             pdf_path.unlink()
         raise HTTPException(status_code=400, detail="Uploaded PDF file is empty.")
 
+    file_hash = hasher.hexdigest()
+
+    # --- Duplicate Document Upload Detection (Primary SHA-256 Check) ---
+    existing_doc = db.query(DocumentModel).filter(
+        DocumentModel.file_hash == file_hash
+    ).first()
+
+    if not existing_doc:
+        # Fallback for documents uploaded prior to hash migration (same size, filename, not failed)
+        existing_doc = db.query(DocumentModel).filter(
+            DocumentModel.file_size == total_size,
+            DocumentModel.original_filename == file.filename,
+            DocumentModel.processing_status != "failed"
+        ).first()
+
+    if existing_doc:
+        # Prevent duplicate disk storage and duplicate processing
+        if pdf_path.exists():
+            try:
+                pdf_path.unlink()
+            except Exception:
+                pass
+
+        log_event(
+            doc_proc_logger,
+            "WARNING",
+            f"Duplicate document upload detected: '{file.filename}' (SHA256: {file_hash}) matches existing document {existing_doc.id} ('{existing_doc.original_filename}')",
+            document_id=existing_doc.id,
+            extra_data={
+                "duplicate": True,
+                "existing_document_id": existing_doc.id,
+                "document_name": existing_doc.original_filename,
+                "file_hash": file_hash
+            }
+        )
+
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "duplicate": True,
+                "message": "This document already exists.",
+                "existing_document_id": existing_doc.id,
+                "document_name": existing_doc.original_filename,
+                "processing_status": existing_doc.processing_status or "completed",
+                "total_voters": existing_doc.total_voters or 0,
+                "total_pages": existing_doc.total_pages or 0,
+                "uploaded_at": existing_doc.uploaded_at.isoformat() if existing_doc.uploaded_at else None,
+                "district": existing_doc.district or "",
+                "constituency": existing_doc.constituency or "",
+                "area": existing_doc.area or "",
+                "ward_number": existing_doc.ward_number or ""
+            }
+        )
+
     user_id = current_user.id if current_user else None
 
-    # Calculate total pages immediately so UI and database have accurate page counts from upload start
+    # Calculate total pages immediately and secondary content fingerprint
     initial_page_count = 0
+    content_fingerprint = None
     try:
         import fitz
         with fitz.open(str(pdf_path)) as _pdoc:
             initial_page_count = len(_pdoc)
+            sample_texts = []
+            for p_i in range(min(3, len(_pdoc))):
+                sample_texts.append(re.sub(r'\s+', ' ', _pdoc[p_i].get_text("text") or "").strip())
+            combined_sample = " | ".join(sample_texts).strip()
+            if len(combined_sample) > 50:
+                content_fingerprint = hashlib.sha256(combined_sample.encode("utf-8")).hexdigest()
     except Exception:
         initial_page_count = 0
+
+    # Secondary Content Fingerprint Duplicate Check
+    if content_fingerprint:
+        existing_by_content = db.query(DocumentModel).filter(
+            DocumentModel.content_fingerprint == content_fingerprint,
+            DocumentModel.processing_status != "failed"
+        ).first()
+        if existing_by_content:
+            if pdf_path.exists():
+                try:
+                    pdf_path.unlink()
+                except Exception:
+                    pass
+
+            log_event(
+                doc_proc_logger,
+                "WARNING",
+                f"Duplicate content fingerprint detected: '{file.filename}' matches existing document {existing_by_content.id} ('{existing_by_content.original_filename}')",
+                document_id=existing_by_content.id,
+                extra_data={
+                    "duplicate": True,
+                    "existing_document_id": existing_by_content.id,
+                    "content_fingerprint": content_fingerprint
+                }
+            )
+
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "duplicate": True,
+                    "message": "This document already exists (matching content detected).",
+                    "existing_document_id": existing_by_content.id,
+                    "document_name": existing_by_content.original_filename,
+                    "processing_status": existing_by_content.processing_status or "completed",
+                    "total_voters": existing_by_content.total_voters or 0,
+                    "total_pages": existing_by_content.total_pages or 0,
+                    "uploaded_at": existing_by_content.uploaded_at.isoformat() if existing_by_content.uploaded_at else None,
+                    "district": existing_by_content.district or "",
+                    "constituency": existing_by_content.constituency or "",
+                    "area": existing_by_content.area or "",
+                    "ward_number": existing_by_content.ward_number or ""
+                }
+            )
 
     # 3. Save document & location metadata in database
     doc_entry = DocumentModel(
@@ -1437,6 +1616,8 @@ async def upload_document(
         original_filename=file.filename,
         stored_file_path=str(pdf_path),
         file_size=total_size,
+        file_hash=file_hash,
+        content_fingerprint=content_fingerprint,
         total_pages=initial_page_count,
         processing_status="processing",
         processing_error=None,
@@ -1972,10 +2153,11 @@ def delete_document(
             detail=f"Failed to delete document and cascaded voter records from database: {str(exc)}"
         )
 
-    # Physical File Cleanup (after database commit)
+    # Physical File Cleanup (all associated original, extracted, JSON, photos, and export files)
     cleaned_files = []
     failed_files = []
 
+    # 1. Original PDF
     pdf_file = resolve_pdf_path(doc_stored_path, doc_id)
     if pdf_file and pdf_file.exists():
         try:
@@ -1984,6 +2166,15 @@ def delete_document(
         except Exception:
             failed_files.append(str(pdf_file.name))
 
+    fallback_upload = UPLOAD_DIR / f"{doc_id}.pdf"
+    if fallback_upload.exists() and str(fallback_upload.name) not in cleaned_files:
+        try:
+            fallback_upload.unlink()
+            cleaned_files.append(str(fallback_upload.name))
+        except Exception:
+            failed_files.append(str(fallback_upload.name))
+
+    # 2. Extracted Results JSON
     res_path = resolve_result_path(doc_id)
     if res_path and res_path.exists():
         try:
@@ -1991,6 +2182,75 @@ def delete_document(
             cleaned_files.append(str(res_path.name))
         except Exception:
             failed_files.append(str(res_path.name))
+
+    # 3. Document-specific Photos in PHOTOS_DIR
+    try:
+        from backend.processor import PHOTOS_DIR
+        for photo_f in PHOTOS_DIR.glob(f"{doc_id}_*"):
+            if photo_f.is_file():
+                try:
+                    photo_f.unlink()
+                    cleaned_files.append(photo_f.name)
+                except Exception:
+                    failed_files.append(photo_f.name)
+    except Exception:
+        pass
+
+    # 4. Document-specific Exported PDFs & Temp Pages
+    try:
+        from backend.pdf_generator import PDF_EXPORTS_DIR
+        for exp_f in PDF_EXPORTS_DIR.glob(f"*{doc_id}*"):
+            if exp_f.is_file():
+                try:
+                    exp_f.unlink()
+                    cleaned_files.append(exp_f.name)
+                except Exception:
+                    failed_files.append(exp_f.name)
+    except Exception:
+        pass
+
+    total_files_identified = len(cleaned_files) + len(failed_files)
+    del_status = "success" if not failed_files else ("partial" if cleaned_files else "failed")
+
+    # Record persistent Deletion Audit Trail in database
+    try:
+        del_audit = DocumentDeletionAuditModel(
+            document_id=doc_id,
+            document_name=doc_name,
+            deleted_by=current_user.username,
+            user_id=current_user.id,
+            requested_at=req_time if 'req_time' in locals() else datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
+            total_files_identified=total_files_identified,
+            files_deleted=len(cleaned_files),
+            files_failed=len(failed_files),
+            status=del_status,
+            error_details=None,
+            cleaned_files=cleaned_files,
+            failed_files=failed_files
+        )
+        db.add(del_audit)
+        db.commit()
+    except Exception as audit_err:
+        db.rollback()
+        log_event(errors_logger, "ERROR", f"Failed to persist deletion audit record for {doc_id}: {audit_err}")
+
+    # Structured event logging to document_deletion channel (DDMMYY dated log)
+    log_event(
+        doc_deletion_logger,
+        "INFO",
+        f"Document {doc_id} ('{doc_name}') deleted by {current_user.username}: {len(cleaned_files)} files deleted, {len(failed_files)} failed.",
+        document_id=doc_id,
+        user_id=current_user.id,
+        extra_data={
+            "event": "document_deleted",
+            "document_id": doc_id,
+            "document_name": doc_name,
+            "files_deleted": len(cleaned_files),
+            "files_failed": len(failed_files),
+            "status": del_status
+        }
+    )
 
     return {
         "status": "success",
@@ -2923,12 +3183,12 @@ def generate_filtered_voter_list_pdf(
         panchayat_val = first_doc.area
     if not panchayat_val or str(panchayat_val).strip().isdigit():
         if first_doc and "ramachandrapuram" in (first_doc.original_filename or "").lower():
-            panchayat_val = "రామచంద్రపురం"
+            panchayat_val = getattr(settings, "DEFAULT_PANCHAYAT", "రామచంద్రపురం")
 
-    mandal_val = "పెంటపాడు"
-    constituency_val = (eff_constituency if (eff_constituency and eff_constituency != "all") else None) or (first_doc.constituency if first_doc else None) or "తాడేపల్లిగూడెం"
-    district_val = (eff_district if (eff_district and eff_district != "all") else None) or (first_doc.district if first_doc else None) or "పశ్చిమ గోదావరి"
-    ward_val = (eff_ward if (eff_ward and eff_ward != "all") else None) or (first_doc.ward_number if first_doc else None) or "2"
+    mandal_val = getattr(settings, "DEFAULT_MANDAL", "పెంటపాడు")
+    constituency_val = (eff_constituency if (eff_constituency and eff_constituency != "all") else None) or (first_doc.constituency if first_doc else None) or getattr(settings, "DEFAULT_CONSTITUENCY", "తాడేపల్లిగూడెం")
+    district_val = (eff_district if (eff_district and eff_district != "all") else None) or (first_doc.district if first_doc else None) or getattr(settings, "DEFAULT_DISTRICT", "పశ్చిమ గోదావరి")
+    ward_val = (eff_ward if (eff_ward and eff_ward != "all") else None) or (first_doc.ward_number if first_doc else None) or getattr(settings, "DEFAULT_WARD", "2")
 
     pdf_bytes = generate_voters_a4_pdf(
         voters,

@@ -188,6 +188,8 @@ class DocumentModel(Base):
     original_filename = Column(String(512), nullable=False)
     stored_file_path = Column(String(1024), nullable=False)
     file_size = Column(BigInteger, default=0)
+    file_hash = Column(String(64), nullable=True, index=True) # SHA-256 hex digest
+    content_fingerprint = Column(String(64), nullable=True, index=True) # Secondary content hash
     total_pages = Column(Integer, default=0)
     processing_status = Column(String(32), default="uploaded", index=True) # uploaded, processing, completed, failed
     processing_error = Column(Text, nullable=True)
@@ -217,6 +219,8 @@ class DocumentModel(Base):
             "original_filename": self.original_filename,
             "stored_file_path": self.stored_file_path,
             "file_size": self.file_size,
+            "file_hash": self.file_hash,
+            "content_fingerprint": self.content_fingerprint,
             "total_pages": self.total_pages or 0,
             "processed_pages": self.processed_pages or 0,
             "failed_pages": self.failed_pages or 0,
@@ -307,6 +311,42 @@ class DocumentPageModel(Base):
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+class DocumentDeletionAuditModel(Base):
+    __tablename__ = "document_deletion_audits"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    document_id = Column(String(64), nullable=False, index=True)
+    document_name = Column(String(512), nullable=False)
+    deleted_by = Column(String(150), nullable=False)
+    user_id = Column(Integer, nullable=True)
+    requested_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    completed_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    total_files_identified = Column(Integer, default=0, nullable=False)
+    files_deleted = Column(Integer, default=0, nullable=False)
+    files_failed = Column(Integer, default=0, nullable=False)
+    status = Column(String(32), default="success", nullable=False) # success, partial, failed
+    error_details = Column(Text, nullable=True)
+    cleaned_files = Column(JSONText, nullable=True)
+    failed_files = Column(JSONText, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "document_name": self.document_name,
+            "deleted_by": self.deleted_by,
+            "user_id": self.user_id,
+            "requested_at": self.requested_at.isoformat() if self.requested_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "total_files_identified": self.total_files_identified,
+            "files_deleted": self.files_deleted,
+            "files_failed": self.files_failed,
+            "status": self.status,
+            "error_details": self.error_details,
+            "cleaned_files": self.cleaned_files or [],
+            "failed_files": self.failed_files or []
         }
 
 class PdfExportJobModel(Base):

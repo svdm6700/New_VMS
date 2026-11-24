@@ -723,6 +723,11 @@ def generate_page_wise_pdf_job(job_id: str, db: Any) -> Dict[str, Any]:
             asm_meta = assemble_pdf_from_pages(completed_page_paths, final_pdf_path)
             job.output_path = asm_meta["output_path"]
             job.file_size = asm_meta["file_size"]
+            job.completed_pages = len(completed_page_paths)
+            job.failed_pages = db.query(PdfExportPageModel).filter(
+                PdfExportPageModel.job_id == job_id,
+                PdfExportPageModel.status == "failed"
+            ).count()
             job.status = "completed" if len(completed_page_paths) == total_pages else "partial"
             job.completed_at = datetime.now(timezone.utc)
             db.commit()

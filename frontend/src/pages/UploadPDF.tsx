@@ -93,6 +93,7 @@ export const UploadPDF: React.FC = () => {
   const [retryingPage, setRetryingPage] = useState<number | null>(null);
   const [isRetryingAll, setIsRetryingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicateDocId, setDuplicateDocId] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   // Field validation checks
@@ -120,6 +121,7 @@ export const UploadPDF: React.FC = () => {
     setIsProcessing(true);
     setUploadProgress(0);
     setError(null);
+    setDuplicateDocId(null);
     setSuccess(null);
     setProgressData(null);
     setProcessStage('Uploading original PDF document and location metadata to server...');
@@ -203,6 +205,11 @@ export const UploadPDF: React.FC = () => {
       }
     } catch (err: any) {
       logger.error('Document processing failed', { error: err.message });
+      const dupId = err.response?.data?.detail?.existing_document?.id || 
+                    (typeof err.message === 'string' && err.message.match(/ID:\s*([a-f0-9-]+)/i)?.[1]);
+      if (dupId) {
+        setDuplicateDocId(dupId);
+      }
       setError(err.message || 'Processing failed. Please check the server connection.');
     } finally {
       setIsProcessing(false);
@@ -633,9 +640,23 @@ export const UploadPDF: React.FC = () => {
 
         {/* Feedback alerts */}
         {error && (
-          <div className="flex items-start gap-2.5 p-3.5 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 rounded-xl text-xs text-rose-700 dark:text-rose-400">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{error}</span>
+          <div className="flex flex-col gap-2 p-3.5 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 rounded-xl text-xs text-rose-700 dark:text-rose-400">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span className="font-medium break-words leading-relaxed">{error}</span>
+            </div>
+            {duplicateDocId && (
+              <div className="pl-6.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/data?docId=${duplicateDocId}`)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer"
+                >
+                  <span>View Existing Document</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
           </div>
         )}
 
