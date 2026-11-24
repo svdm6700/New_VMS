@@ -1,8 +1,8 @@
 import zipfile
 import os
 
-zip_path = r"D:\pgsql_binaries.zip"
-target_dir = r"D:\pgsql"
+zip_path = os.getenv("PG_BINARIES_ZIP", r"D:\pgsql_binaries.zip")
+target_dir = os.getenv("PG_TARGET_DIR", r"D:\pgsql")
 
 print("Opening zip:", zip_path)
 os.makedirs(target_dir, exist_ok=True)

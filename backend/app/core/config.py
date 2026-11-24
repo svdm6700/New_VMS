@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     APP_TAGLINE: str = "Smart Voter Data Extraction & Management System"
     APP_ENV: str = "development"
     APP_DEBUG: bool = True
-    APP_HOST: str = "127.0.0.1"
+    APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
     APP_VERSION: str = "1.0.0"
 
@@ -69,6 +69,19 @@ class Settings(BaseSettings):
 
     # 4b. Wallet & Voter Payment Settings
     DEFAULT_VOTER_PAYMENT_AMOUNT: float = 500.0
+
+    # 4c. Configurable Regional & Environment Defaults
+    DEFAULT_DISTRICT: str = "పశ్చిమ గోదావరి"
+    DEFAULT_CONSTITUENCY: str = "తాడేపల్లిగూడెం"
+    DEFAULT_PANCHAYAT: str = "రామచంద్రపురం"
+    DEFAULT_MANDAL: str = "పెంటపాడు"
+    DEFAULT_WARD: str = "2"
+    DEFAULT_YEAR: str = "2026"
+    DEFAULT_AS_ON_DATE: str = "01-09-2024"
+    DEFAULT_PUBLISH_DATE: str = "15-04-2026"
+    DEFAULT_CLIENT_IP: str = "127.0.0.1"
+    SEED_IP_ADDRESS: str = "127.0.0.1"
+    TESSERACT_CMD: Optional[str] = None
 
     # 5. PDF Upload Settings
     PDF_UPLOAD_DIR: str = "storage/uploads"

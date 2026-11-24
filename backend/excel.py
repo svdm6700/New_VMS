@@ -135,7 +135,7 @@ def create_excel(result: dict) -> bytes:
         rows = [["Not Available" for _ in range(len(headers) - 1)] + [1]]
 
     # Row 1: Main Title Banner
-    filename = result.get("metadata", {}).get("filename", "రామచంద్రపురం ఓటర్ల జాబితా")
+    filename = result.get("metadata", {}).get("filename", os.getenv("DEFAULT_FILENAME_LABEL", "ఓటర్ల జాబితా"))
     title_text = f"{Path(filename).stem} - ఓటర్ల జాబితా"
     ws.append([title_text])
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
@@ -164,7 +164,11 @@ def create_excel(result: dict) -> bytes:
     if loc_parts:
         subtitle_text = " | ".join(loc_parts)
     else:
-        subtitle_text = "పంచాయతీ: రామచంద్రపురం | మండలం: పెంటపాడు | జిల్లా: పశ్చిమ గోదావరి | వార్డు: 2"
+        panchayat_fallback = os.getenv("DEFAULT_PANCHAYAT", "రామచంద్రపురం")
+        mandal_fallback = os.getenv("DEFAULT_MANDAL", "పెంటపాడు")
+        dist_fallback = os.getenv("DEFAULT_DISTRICT", "పశ్చిమ గోదావరి")
+        ward_fallback = os.getenv("DEFAULT_WARD", "2")
+        subtitle_text = f"పంచాయతీ: {panchayat_fallback} | మండలం: {mandal_fallback} | జిల్లా: {dist_fallback} | వార్డు: {ward_fallback}"
 
     ws.append([subtitle_text])
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
@@ -235,12 +239,12 @@ def create_excel(result: dict) -> bytes:
         ("Source document", title_text),
         ("Coverage", coverage_desc),
         ("Records included", f"{len(rows)} records processed"),
-        ("Panchayat", "రామచంద్రపురం"),
-        ("Mandal", "పెంటపాడు"),
-        ("District", "పశ్చిమ గోదావరి"),
-        ("Ward", "2"),
-        ("Age calculation date", "01-09-2024"),
-        ("Publication date", "15-04-2026"),
+        ("Panchayat", meta.get("area") or os.getenv("DEFAULT_PANCHAYAT", "రామచంద్రపురం")),
+        ("Mandal", meta.get("mandal") or os.getenv("DEFAULT_MANDAL", "పెంటపాడు")),
+        ("District", meta.get("district") or os.getenv("DEFAULT_DISTRICT", "పశ్చిమ గోదావరి")),
+        ("Ward", meta.get("ward_number") or os.getenv("DEFAULT_WARD", "2")),
+        ("Age calculation date", meta.get("as_on_date") or os.getenv("DEFAULT_AS_ON_DATE", "01-09-2024")),
+        ("Publication date", meta.get("publish_date") or os.getenv("DEFAULT_PUBLISH_DATE", "15-04-2026")),
         ("Transcription note", "Telugu names and relationship details were transcribed from the PDF text/image. Please verify spellings against the original PDF where exact legal-name accuracy is required."),
         ("Source ambiguity note", "Electoral roll numbers and IDs are preserved exactly as displayed in the extracted text and have not been guessed or completed."),
     ]

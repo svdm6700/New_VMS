@@ -1,4 +1,5 @@
 import sys
+import math
 import uuid
 from uuid import uuid4
 import json
@@ -33,10 +34,11 @@ from fastapi import (
     Query,
     BackgroundTasks,
     Depends,
-    status
+    status,
+    Request
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse, Response
+from fastapi.responses import StreamingResponse, FileResponse, Response, JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc, text, func, case, and_
@@ -141,6 +143,19 @@ def resolve_pdf_path(stored_path: Optional[str], doc_id: str) -> Optional[Path]:
         return legacy_p
     return None
 
+def extract_client_ip(req: Any = None) -> str:
+    """Extract client IP dynamically from request headers or ASGI connection, avoiding hardcoding."""
+    if req and hasattr(req, "headers"):
+        forwarded = req.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        real_ip = req.headers.get("x-real-ip")
+        if real_ip:
+            return real_ip.strip()
+        if hasattr(req, "client") and req.client and req.client.host:
+            return req.client.host
+    return getattr(settings, "DEFAULT_CLIENT_IP", "127.0.0.1")
+
 app = FastAPI(
     title=f"{settings.APP_SHORT_NAME} - {settings.APP_FULL_NAME}",
     description=settings.APP_TAGLINE,
@@ -163,6 +178,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Ensure all unhandled 500 exceptions return JSON with CORS headers
+    so the frontend receives meaningful error details instead of a network error.
+    """
+    import traceback
+    traceback.print_exc()
+    log_event("errors", f"Unhandled Exception on {request.method} {request.url.path}: {str(exc)}", level="ERROR")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Methods": "*",
+        }
+    )
+
 
 # -------------------------------------------------------------
 # Pydantic Schemas
@@ -2850,12 +2887,12 @@ def generate_filtered_voter_list_pdf(
             panchayat_val = first_doc.area
         if not panchayat_val or str(panchayat_val).strip().isdigit():
             if first_doc and "ramachandrapuram" in (first_doc.original_filename or "").lower():
-                panchayat_val = "రామచంద్రపురం"
+                panchayat_val = getattr(settings, "DEFAULT_PANCHAYAT", "రామచంద్రపురం")
 
-        mandal_val = "పెంటపాడు"
-        constituency_val = (eff_constituency if (eff_constituency and eff_constituency != "all") else None) or (first_doc.constituency if first_doc else None) or "తాడేపల్లిగూడెం"
-        district_val = (eff_district if (eff_district and eff_district != "all") else None) or (first_doc.district if first_doc else None) or "పశ్చిమ గోదావరి"
-        ward_val = (eff_ward if (eff_ward and eff_ward != "all") else None) or (first_doc.ward_number if first_doc else None) or "2"
+        mandal_val = getattr(settings, "DEFAULT_MANDAL", "పెంటపాడు")
+        constituency_val = (eff_constituency if (eff_constituency and eff_constituency != "all") else None) or (first_doc.constituency if first_doc else None) or getattr(settings, "DEFAULT_CONSTITUENCY", "తాడేపల్లిగూడెం")
+        district_val = (eff_district if (eff_district and eff_district != "all") else None) or (first_doc.district if first_doc else None) or getattr(settings, "DEFAULT_DISTRICT", "పశ్చిమ గోదావరి")
+        ward_val = (eff_ward if (eff_ward and eff_ward != "all") else None) or (first_doc.ward_number if first_doc else None) or getattr(settings, "DEFAULT_WARD", "2")
 
         pdf_bytes = generate_single_voter_pdf_page(
             page_voters=page_voters,
@@ -3324,6 +3361,7 @@ def get_voter_payment_status(
 def submit_voter_payment(
     voter_id: str,
     req: Optional[SubmitVoterPaymentRequest] = None,
+    request: Request = None,
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -3443,7 +3481,7 @@ def submit_voter_payment(
         user_id=current_user.id,
         action="VOTER_PAYMENT_SUBMITTED",
         details=f"User @{current_user.username} submitted payment of ₹{float(deduct_amount):,.2f} for voter {voter.voter_name} ({voter.unique_key}).",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=now_utc
     ))
 
@@ -3466,6 +3504,7 @@ def submit_voter_payment(
 def update_voter_remarks(
     voter_id: int,
     req: UpdateVoterRemarksRequest,
+    request: Request = None,
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -3497,7 +3536,7 @@ def update_voter_remarks(
         user_id=current_user.id,
         action="VOTER_REMARKS_UPDATED",
         details=f"User @{current_user.username} updated remarks for voter {voter.voter_name} ({voter.unique_key}).",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()
@@ -5047,6 +5086,7 @@ def refund_payment(
 @app.delete("/api/payments/{payment_id}", tags=["Payments Dashboard"])
 def delete_payment(
     payment_id: int,
+    request: Request = None,
     current_user: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
@@ -5059,7 +5099,7 @@ def delete_payment(
         user_id=current_user.id,
         action="DELETE_PAYMENT",
         details=f"Deleted payment ID {payment.id} (Txn: {payment.transaction_id}, Amount: ₹{payment.amount}, Voter: {payment.voter.voter_name if payment.voter else 'N/A'})",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
 
@@ -5181,6 +5221,7 @@ def list_rbac_roles(
 @app.post("/api/rbac/roles", status_code=status.HTTP_201_CREATED, tags=["RBAC Module"])
 def create_rbac_role(
     req: RoleCreateRequest,
+    request: Request = None,
     current_user: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
@@ -5212,7 +5253,7 @@ def create_rbac_role(
         user_id=current_user.id,
         action="CREATE_ROLE",
         details=f"Created custom role '{clean_name}' with {len(req.permission_codes)} permission(s).",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()
@@ -5235,6 +5276,7 @@ def get_rbac_role(role_id: int, current_user: UserModel = Depends(require_admin)
 def update_rbac_role(
     role_id: int,
     req: RoleUpdateRequest,
+    request: Request = None,
     current_user: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
@@ -5262,7 +5304,7 @@ def update_rbac_role(
         user_id=current_user.id,
         action="UPDATE_ROLE_PERMISSIONS",
         details=f"Updated role '{role.role_name}' permissions.",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()
@@ -5277,6 +5319,7 @@ def update_rbac_role(
 @app.delete("/api/rbac/roles/{role_id}", tags=["RBAC Module"])
 def delete_rbac_role(
     role_id: int,
+    request: Request = None,
     current_user: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
@@ -5299,7 +5342,7 @@ def delete_rbac_role(
         user_id=current_user.id,
         action="DELETE_ROLE",
         details=f"Deleted custom role '{role_name}'.",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()
@@ -5342,6 +5385,7 @@ def list_rbac_users(
 def assign_user_role(
     user_id: int,
     req: UserRoleAssignRequest,
+    request: Request = None,
     current_user: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
@@ -5370,7 +5414,7 @@ def assign_user_role(
         user_id=current_user.id,
         action="ASSIGN_USER_ROLE",
         details=f"Changed user '{user.username}' role from '{old_role}' to '{target_role.role_name}'.",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()
@@ -5509,6 +5553,7 @@ def list_user_geographic_assignments(
 @app.post("/api/admin/user-assignments", tags=["Geographic Assignment"])
 def create_user_geographic_assignment(
     req: CreateGeographicAssignmentRequest,
+    request: Request = None,
     current_admin: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
@@ -5574,7 +5619,7 @@ def create_user_geographic_assignment(
         user_id=current_admin.id,
         action="GEO_ASSIGNMENT_CREATED",
         details=f"Assigned user @{u.username} to Constituency '{req.constituency}', Wards: {', '.join(req.wards) if req.wards else 'All'}",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()
@@ -5585,6 +5630,7 @@ def create_user_geographic_assignment(
 def update_user_geographic_assignment(
     assignment_id: int,
     req: UpdateGeographicAssignmentRequest,
+    request: Request = None,
     current_admin: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
@@ -5618,7 +5664,7 @@ def update_user_geographic_assignment(
         user_id=current_admin.id,
         action="GEO_ASSIGNMENT_UPDATED",
         details=f"Updated geographic assignment #{a.id} for user #{a.user_id}",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()
@@ -5628,6 +5674,7 @@ def update_user_geographic_assignment(
 @app.delete("/api/admin/user-assignments/{assignment_id}", tags=["Geographic Assignment"])
 def delete_user_geographic_assignment(
     assignment_id: int,
+    request: Request = None,
     current_admin: UserModel = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
@@ -5644,7 +5691,7 @@ def delete_user_geographic_assignment(
         user_id=current_admin.id,
         action="GEO_ASSIGNMENT_REVOKED",
         details=f"Revoked geographic assignment #{assignment_id} for user @{user_name}",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()
@@ -6033,6 +6080,7 @@ def get_user_assigned_voter_details(
 @app.post("/api/user/voter-allocations", tags=["Voter Allocation"])
 def assign_voter_amount(
     req: AssignVoterAmountRequest,
+    request: Request = None,
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -6101,7 +6149,7 @@ def assign_voter_amount(
         user_id=current_user.id,
         action="VOTER_AMOUNT_ASSIGNED",
         details=f"User @{current_user.username} assigned ₹{req.amount:,.2f} to voter {voter.voter_name} (EPIC: {voter.voter_id}).",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()
@@ -6156,6 +6204,7 @@ def get_voter_allocation_details(
 def reverse_voter_allocation(
     allocation_id: int,
     req: ReverseAllocationRequest,
+    request: Request = None,
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -6178,7 +6227,7 @@ def reverse_voter_allocation(
         user_id=current_user.id,
         action="VOTER_ALLOCATION_REVERSED",
         details=f"Reversed allocation {alloc.allocation_reference} (₹{alloc.amount:,.2f}) for voter ID {alloc.voter_id}. Reason: {req.reason.strip()}.",
-        ip_address="127.0.0.1",
+        ip_address=extract_client_ip(request),
         created_at=datetime.now(timezone.utc)
     ))
     db.commit()

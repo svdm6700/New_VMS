@@ -132,8 +132,8 @@ export const documentService = {
     const res = await uploadApi.post('/api/documents/upload', formData, {
       timeout: 600000, // 10 minutes — handles large PDFs with 2,500+ voters
       params: {
-        ollama_url: options?.ollamaUrl || 'http://localhost:11434',
-        model_name: options?.modelName || 'llama3.2',
+        ollama_url: options?.ollamaUrl || (import.meta.env?.VITE_OLLAMA_URL as string) || '',
+        model_name: options?.modelName || (import.meta.env?.VITE_OLLAMA_MODEL as string) || 'llama3.2',
         use_ai: options?.useAi ?? false,
       },
       onUploadProgress: (progressEvent) => {

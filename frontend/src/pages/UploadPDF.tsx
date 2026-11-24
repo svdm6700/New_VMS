@@ -78,8 +78,10 @@ export const UploadPDF: React.FC = () => {
   });
 
   // Pipeline & AI Translation settings
-  const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
-  const [modelName, setModelName] = useState('llama3.2');
+  const defaultOllama = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_OLLAMA_URL) || '';
+  const defaultModel = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_OLLAMA_MODEL) || 'llama3.2';
+  const [ollamaUrl, setOllamaUrl] = useState(defaultOllama);
+  const [modelName, setModelName] = useState(defaultModel);
   const [useAi, setUseAi] = useState(false);
 
   // Processing & Page-wise Feedback states
@@ -579,7 +581,7 @@ export const UploadPDF: React.FC = () => {
                   type="text"
                   value={ollamaUrl}
                   onChange={(e) => setOllamaUrl(e.target.value)}
-                  placeholder="http://localhost:11434"
+                  placeholder={defaultOllama || "e.g. http://localhost:11434"}
                   className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
                 />
               </div>

@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Union, Any, Optional, Dict
 import pymupdf
+from sqlalchemy import or_
 
 from backend.photo_service import get_voter_photo_path, build_photo_index
 from backend.logger import log_event
@@ -157,26 +158,26 @@ def generate_voters_a4_pdf(
     first_voter = voters[0] if (voters and len(voters) > 0) else None
     doc_obj = getattr(first_voter, "document", None) if first_voter else None
 
-    eff_panchayat = _clean_str(panchayat or getattr(doc_obj, "area", None) or area, "రామచంద్రపురం")
+    eff_panchayat = _clean_str(panchayat or getattr(doc_obj, "area", None) or area, os.getenv("DEFAULT_PANCHAYAT", "రామచంద్రపురం"))
     if "(" in eff_panchayat:
         eff_panchayat = eff_panchayat.split("(")[0].strip()
 
-    eff_constituency = _clean_str(constituency or getattr(doc_obj, "constituency", None), "తాడేపల్లిగూడెం")
+    eff_constituency = _clean_str(constituency or getattr(doc_obj, "constituency", None), os.getenv("DEFAULT_CONSTITUENCY", "తాడేపల్లిగూడెం"))
     if "(" in eff_constituency:
         eff_constituency = eff_constituency.split("(")[0].strip()
 
-    eff_district = _clean_str(district or getattr(doc_obj, "district", None), "పశ్చిమ గోదావరి")
+    eff_district = _clean_str(district or getattr(doc_obj, "district", None), os.getenv("DEFAULT_DISTRICT", "పశ్చిమ గోదావరి"))
     if "(" in eff_district:
         eff_district = eff_district.split("(")[0].strip()
 
-    eff_ward = _clean_str(ward or getattr(doc_obj, "ward_number", None), "2")
+    eff_ward = _clean_str(ward or getattr(doc_obj, "ward_number", None), os.getenv("DEFAULT_WARD", "2"))
     if "ward" in eff_ward.lower():
         eff_ward = "".join(ch for ch in eff_ward if ch.isdigit()) or eff_ward
 
-    eff_mandal = _clean_str(mandal, "పెంటపాడు")
-    eff_as_on_date = _clean_str(as_on_date, "01-09-2024")
-    eff_publish_date = _clean_str(publish_date, "15-04-2026")
-    eff_year = _clean_str(year, "2026")
+    eff_mandal = _clean_str(mandal, os.getenv("DEFAULT_MANDAL", "పెంటపాడు"))
+    eff_as_on_date = _clean_str(as_on_date, os.getenv("DEFAULT_AS_ON_DATE", "01-09-2024"))
+    eff_publish_date = _clean_str(publish_date, os.getenv("DEFAULT_PUBLISH_DATE", "15-04-2026"))
+    eff_year = _clean_str(year, os.getenv("DEFAULT_YEAR", "2026"))
 
     if not voters:
         doc = pymupdf.open()
@@ -257,14 +258,14 @@ def render_voter_pdf_page(
     sub_font = REGULAR_FONT or BOLD_FONT
     center_x = (PAGE_FRAME_X0 + PAGE_FRAME_X1) / 2.0
 
-    eff_panchayat = meta.get("eff_panchayat", "రామచంద్రపురం")
-    eff_constituency = meta.get("eff_constituency", "తాడేపల్లిగూడెం")
-    eff_district = meta.get("eff_district", "పశ్చిమ గోదావరి")
-    eff_ward = meta.get("eff_ward", "2")
-    eff_mandal = meta.get("eff_mandal", "పెంటపాడు")
-    eff_as_on_date = meta.get("eff_as_on_date", "01-09-2024")
-    eff_publish_date = meta.get("eff_publish_date", "15-04-2026")
-    eff_year = meta.get("eff_year", "2026")
+    eff_panchayat = meta.get("eff_panchayat") or os.getenv("DEFAULT_PANCHAYAT", "రామచంద్రపురం")
+    eff_constituency = meta.get("eff_constituency") or os.getenv("DEFAULT_CONSTITUENCY", "తాడేపల్లిగూడెం")
+    eff_district = meta.get("eff_district") or os.getenv("DEFAULT_DISTRICT", "పశ్చిమ గోదావరి")
+    eff_ward = meta.get("eff_ward") or os.getenv("DEFAULT_WARD", "2")
+    eff_mandal = meta.get("eff_mandal") or os.getenv("DEFAULT_MANDAL", "పెంటపాడు")
+    eff_as_on_date = meta.get("eff_as_on_date") or os.getenv("DEFAULT_AS_ON_DATE", "01-09-2024")
+    eff_publish_date = meta.get("eff_publish_date") or os.getenv("DEFAULT_PUBLISH_DATE", "15-04-2026")
+    eff_year = meta.get("eff_year") or os.getenv("DEFAULT_YEAR", "2026")
 
     header_l1 = f"{eff_panchayat} పంచాయతీ ఓటర్ల జాబితా - {eff_year}"
     w1 = title_font.text_length(header_l1, fontsize=9.8) if title_font else 200.0
@@ -510,14 +511,14 @@ def generate_single_voter_pdf_page(
     doc_obj = getattr(first_voter, "document", None) if first_voter else None
 
     meta = {
-        "eff_panchayat": _clean_str(kwargs.get("panchayat") or getattr(doc_obj, "area", None), "రామచంద్రపురం"),
-        "eff_constituency": _clean_str(kwargs.get("constituency") or getattr(doc_obj, "constituency", None), "తాడేపల్లిగూడెం"),
-        "eff_district": _clean_str(kwargs.get("district") or getattr(doc_obj, "district", None), "పశ్చిమ గోదావరి"),
-        "eff_ward": _clean_str(kwargs.get("ward") or getattr(doc_obj, "ward_number", None), "2"),
-        "eff_mandal": _clean_str(kwargs.get("mandal"), "పెంటపాడు"),
-        "eff_as_on_date": _clean_str(kwargs.get("as_on_date"), "01-09-2024"),
-        "eff_publish_date": _clean_str(kwargs.get("publish_date"), "15-04-2026"),
-        "eff_year": _clean_str(kwargs.get("year"), "2026"),
+        "eff_panchayat": _clean_str(kwargs.get("panchayat") or getattr(doc_obj, "area", None), os.getenv("DEFAULT_PANCHAYAT", "రామచంద్రపురం")),
+        "eff_constituency": _clean_str(kwargs.get("constituency") or getattr(doc_obj, "constituency", None), os.getenv("DEFAULT_CONSTITUENCY", "తాడేపల్లిగూడెం")),
+        "eff_district": _clean_str(kwargs.get("district") or getattr(doc_obj, "district", None), os.getenv("DEFAULT_DISTRICT", "పశ్చిమ గోదావరి")),
+        "eff_ward": _clean_str(kwargs.get("ward") or getattr(doc_obj, "ward_number", None), os.getenv("DEFAULT_WARD", "2")),
+        "eff_mandal": _clean_str(kwargs.get("mandal"), os.getenv("DEFAULT_MANDAL", "పెంటపాడు")),
+        "eff_as_on_date": _clean_str(kwargs.get("as_on_date"), os.getenv("DEFAULT_AS_ON_DATE", "01-09-2024")),
+        "eff_publish_date": _clean_str(kwargs.get("publish_date"), os.getenv("DEFAULT_PUBLISH_DATE", "15-04-2026")),
+        "eff_year": _clean_str(kwargs.get("year"), os.getenv("DEFAULT_YEAR", "2026")),
     }
 
     render_voter_pdf_page(

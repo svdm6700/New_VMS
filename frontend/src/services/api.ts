@@ -3,26 +3,30 @@ import { logger } from './loggingService';
 
 /**
  * Dynamically resolves the API base URL:
- * 1. window.__API_BASE_URL__ (runtime override)
+ * 1. window.__API_BASE_URL__ (runtime container / Nginx injection)
  * 2. VITE_API_BASE_URL or VITE_API_URL environment variable
- * 3. Dynamic browser origin on port 8000 (e.g. http://localhost:8000 or http://127.0.0.1:8000 or LAN IP)
- * 4. Fallback: http://127.0.0.1:8000
+ * 3. In dev mode (Vite port 5173 / dev server): connects to backend host + VITE_BACKEND_PORT
+ * 4. In production: uses current origin (window.location.origin)
  */
 export const getApiBaseUrl = (): string => {
   if (typeof window !== 'undefined' && (window as any).__API_BASE_URL__) {
     return (window as any).__API_BASE_URL__;
   }
-  const envUrl = (typeof import.meta !== 'undefined' && (import.meta.env?.VITE_API_BASE_URL || import.meta.env?.VITE_API_URL));
+  const envUrl = typeof import.meta !== 'undefined' && (import.meta.env?.VITE_API_BASE_URL || import.meta.env?.VITE_API_URL);
   if (envUrl && String(envUrl).trim()) {
     return String(envUrl).trim().replace(/\/api\/?$/, '');
   }
   if (typeof window !== 'undefined' && window.location) {
-    const proto = window.location.protocol;
-    const hostname = window.location.hostname || 'localhost';
-    const port = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BACKEND_PORT) || '8000';
-    return `${proto}//${hostname}:${port}`;
+    const isDev = Boolean(import.meta.env?.DEV) || window.location.port === '5173';
+    if (isDev) {
+      const proto = window.location.protocol || 'http:';
+      const hostname = window.location.hostname || 'localhost';
+      const port = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BACKEND_PORT) || '8000';
+      return `${proto}//${hostname}:${port}`;
+    }
+    return window.location.origin;
   }
-  return 'http://127.0.0.1:8000';
+  return '';
 };
 
 export const API_BASE_URL = getApiBaseUrl();

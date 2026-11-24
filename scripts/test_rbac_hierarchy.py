@@ -1,3 +1,4 @@
+import os
 """
 VMS - Role-Based Access Control (RBAC) & Screen Visibility Verification Suite
 Validates all 14 test cases specified in Section 11 of the RBAC requirements.
@@ -8,7 +9,7 @@ import io
 import json
 import requests
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
 # ANSI Colors
 GREEN = "\033[92m"

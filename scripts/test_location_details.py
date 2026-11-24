@@ -1,8 +1,9 @@
+import os
 import requests
 import time
 from pathlib import Path
 
-BASE = 'http://127.0.0.1:8000'
+BASE = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
 def main():
     print("=" * 65)

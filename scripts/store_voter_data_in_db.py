@@ -15,7 +15,7 @@ from backend.database import SessionLocal, DocumentModel, VoterRecordModel, User
 import pymupdf
 from processor import parse_voter_blocks, clean
 
-PDF_SOURCE = Path(r"C:\Users\VAMSI\Downloads\Ramachandrapuram.pdf")
+PDF_SOURCE = Path(os.getenv("VOTER_PDF_SOURCE", str(Path(__file__).resolve().parent.parent / "storage" / "uploads" / "sample.pdf")))
 
 def main():
     print("=" * 65)

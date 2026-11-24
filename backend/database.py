@@ -1154,7 +1154,7 @@ def ensure_default_seed():
                 user_id=admin_user.id if admin_user else None,
                 action="SYSTEM_INIT_RBAC",
                 details="Initial RBAC system tables, permissions, and roles initialized successfully.",
-                ip_address="127.0.0.1",
+                ip_address=getattr(settings, "SEED_IP_ADDRESS", "127.0.0.1"),
                 created_at=utcnow()
             ))
             db.commit()

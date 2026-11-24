@@ -194,11 +194,20 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
                   {error}
                 </p>
               </div>
-              <div className="flex items-center gap-3 w-full pt-2">
+              <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-3 w-full pt-2">
+                {onRetryFailedPages && progress?.failed_pages && progress.failed_pages > 0 ? (
+                  <button
+                    onClick={onRetryFailedPages}
+                    className="w-full sm:flex-1 py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2 active:scale-95"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Retry Failed Pages ({progress.failed_pages})</span>
+                  </button>
+                ) : null}
                 {onRetry && (
                   <button
                     onClick={onRetry}
-                    className="flex-1 py-2.5 px-4 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2 active:scale-95"
+                    className="w-full sm:flex-1 py-2.5 px-4 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2 active:scale-95"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                     <span>Try Again</span>
@@ -206,7 +215,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
                 )}
                 <button
                   onClick={onClose}
-                  className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold transition-all active:scale-95"
+                  className="w-full sm:flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold transition-all active:scale-95"
                 >
                   Dismiss
                 </button>

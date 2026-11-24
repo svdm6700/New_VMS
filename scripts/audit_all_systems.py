@@ -4,8 +4,8 @@ import uuid
 import requests
 from decimal import Decimal
 
-BASE = "http://127.0.0.1:8000"
-FRONTEND = "http://localhost:5173"
+BASE = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+FRONTEND = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 def run_audit():
     print("=" * 70)

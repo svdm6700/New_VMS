@@ -409,7 +409,7 @@ def test_ward_serial_number_treatment_in_pdf():
 
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     assert len(doc) == 1
-    page_text = doc[0].get_text("text")
+    page_text = doc[0].get_text("text").replace("\xa0", " ")
 
     # Verify serial number and ward label appear in the generated PDF
     assert "142" in page_text
@@ -440,7 +440,7 @@ def test_page_wise_single_page_pdf_generation(sample_voters_100):
 
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     assert len(doc) == 1
-    page_text = doc[0].get_text("text")
+    page_text = doc[0].get_text("text").replace("\xa0", " ")
     assert "పుట సంఖ్య . 3/4" in page_text
     doc.close()
 
@@ -473,9 +473,9 @@ def test_assemble_pdf_from_pages(tmp_path, sample_voters_100):
 
     doc = pymupdf.open(str(out_file))
     assert len(doc) == 3
-    assert "పుట సంఖ్య . 1/3" in doc[0].get_text("text")
-    assert "పుట సంఖ్య . 2/3" in doc[1].get_text("text")
-    assert "పుట సంఖ్య . 3/3" in doc[2].get_text("text")
+    assert "పుట సంఖ్య . 1/3" in doc[0].get_text("text").replace("\xa0", " ")
+    assert "పుట సంఖ్య . 2/3" in doc[1].get_text("text").replace("\xa0", " ")
+    assert "పుట సంఖ్య . 3/3" in doc[2].get_text("text").replace("\xa0", " ")
     doc.close()
 
 

@@ -875,7 +875,7 @@ export const Settings: React.FC = () => {
                       <td className="py-3 px-4 text-slate-600 dark:text-slate-400 max-w-md truncate font-sans">
                         {log.details || '—'}
                       </td>
-                      <td className="py-3 px-4 text-slate-400">{log.ip_address || '127.0.0.1'}</td>
+                      <td className="py-3 px-4 text-slate-400">{log.ip_address || '—'}</td>
                     </tr>
                   ))}
                 </tbody>

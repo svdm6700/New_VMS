@@ -145,7 +145,7 @@ def test_5_api_endpoints_and_rbac():
     import requests
     from backend.security import create_access_token
 
-    base_url = "http://127.0.0.1:8000"
+    base_url = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
     db: Session = SessionLocal()
 
     try:

@@ -30,8 +30,11 @@ STORAGE_BASE = Path(__file__).resolve().parent.parent / "storage"
 PHOTOS_DIR = STORAGE_BASE / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Automatically locate Tesseract on Windows if not already in PATH
-if not shutil.which("tesseract"):
+# Automatically locate Tesseract via ENV, PATH, or standard Windows locations
+_tess_env = os.getenv("TESSERACT_CMD") or os.getenv("TESSERACT_PATH") or getattr(settings, "TESSERACT_CMD", None)
+if _tess_env and os.path.isfile(_tess_env):
+    pytesseract.pytesseract.tesseract_cmd = _tess_env
+elif not shutil.which("tesseract"):
     _possible_paths = [
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
