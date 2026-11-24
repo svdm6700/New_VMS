@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from backend.database import SessionLocal, DocumentModel, DocumentPageModel, VoterRecordModel, PaymentModel, UserModel
 from backend.logger import (
     log_event, backend_logger, doc_proc_logger, pdf_export_logger,
-    frontend_logger, errors_logger, LOGS_DIR, redact_sensitive_data
+    frontend_logger, errors_logger, LOGS_DIR, get_current_day_folder, redact_sensitive_data
 )
 from backend.processor import extract_single_page_data
 import fitz
@@ -36,9 +36,11 @@ def test_structured_log_files_written():
     log_event(frontend_logger, "INFO", f"Frontend event: {test_msg}", user_agent="Mozilla")
     log_event(errors_logger, "ERROR", f"Error event: {test_msg}", code=500)
 
+    day_folder = get_current_day_folder()
+    assert day_folder.exists(), f"Day-wise log folder {day_folder} does not exist"
     for filename in ["backend.log", "document_processing.log", "pdf_export.log", "frontend.log", "errors.log"]:
-        file_path = LOGS_DIR / filename
-        assert file_path.exists(), f"Log file {filename} does not exist"
+        file_path = day_folder / filename
+        assert file_path.exists(), f"Log file {filename} does not exist in day folder {day_folder}"
         with open(file_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
             assert len(lines) > 0, f"Log file {filename} is empty"

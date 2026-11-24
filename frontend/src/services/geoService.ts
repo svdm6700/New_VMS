@@ -34,6 +34,27 @@ export interface Ward {
 }
 
 export const geoService = {
+  // Cascading Selection APIs for Document Upload & Filter Dropdowns
+  async getCascadingDistricts(): Promise<District[]> {
+    const res = await api.get('/api/geo/districts');
+    return res.data;
+  },
+
+  async getCascadingConstituencies(district_id?: number, district_name?: string): Promise<Constituency[]> {
+    const res = await api.get('/api/geo/constituencies', { params: { district_id, district_name } });
+    return res.data;
+  },
+
+  async getCascadingAreas(constituency_id?: number, constituency_name?: string): Promise<{ name: string }[]> {
+    const res = await api.get('/api/geo/areas', { params: { constituency_id, constituency_name } });
+    return res.data;
+  },
+
+  async getCascadingWards(constituency_id?: number, area_name?: string): Promise<Ward[]> {
+    const res = await api.get('/api/geo/wards', { params: { constituency_id, area_name } });
+    return res.data;
+  },
+
   // Master Districts
   async getDistricts(): Promise<District[]> {
     const res = await api.get('/api/admin/districts');

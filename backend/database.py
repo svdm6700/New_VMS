@@ -201,9 +201,12 @@ class DocumentModel(Base):
     uploader = relationship("UserModel", back_populates="documents")
 
     # Manual Location Metadata (District, Constituency, Area, Ward)
+    district_id = Column(Integer, nullable=True, index=True)
     district = Column(String(150), nullable=True, index=True)
+    constituency_id = Column(Integer, nullable=True, index=True)
     constituency = Column(String(150), nullable=True, index=True)
     area = Column(String(200), nullable=True, index=True)
+    ward_id = Column(Integer, nullable=True, index=True)
     ward_number = Column(String(50), nullable=True, index=True)
 
     processed_pages = Column(Integer, default=0, nullable=False)
@@ -227,9 +230,12 @@ class DocumentModel(Base):
             "total_voters": self.total_voters or (len(self.records) if self.records is not None else 0),
             "processing_status": self.processing_status,
             "processing_error": self.processing_error,
+            "district_id": self.district_id,
             "district": self.district or "Not Available",
+            "constituency_id": self.constituency_id,
             "constituency": self.constituency or "Not Available",
             "area": self.area or "Not Available",
+            "ward_id": self.ward_id,
             "ward_number": self.ward_number or "Not Available",
             "uploaded_at": self.uploaded_at.isoformat() if self.uploaded_at else None,
             "processed_at": self.processed_at.isoformat() if self.processed_at else None,

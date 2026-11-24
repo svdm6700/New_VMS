@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   UploadCloud,
@@ -20,16 +20,270 @@ import {
   RotateCcw,
   Check,
   Clock,
-  AlertTriangle
+  AlertTriangle,
+  ChevronDown,
+  Search,
+  X
 } from 'lucide-react';
 import { FileUpload } from '../components/upload/FileUpload';
 import { UploadProgress } from '../components/upload/UploadProgress';
 import { documentService } from '../services/documentService';
 import { useDocuments } from '../contexts/DocumentContext';
-import { geoService } from '../services/geoService';
+import { geoService, District, Constituency, Ward } from '../services/geoService';
 import { useAuth } from '../contexts/AuthContext';
 import { DocumentProgress as IDocumentProgress, DocumentPageItem } from '../types/document';
 import { logger } from '../services/loggingService';
+
+// ---------------------------------------------------------------------------
+// Searchable Dropdown Option Interface
+// ---------------------------------------------------------------------------
+interface DropdownOption {
+  value: string | number;
+  label: string;
+  sublabel?: string;
+  badge?: string;
+  raw?: any;
+}
+
+interface SearchableDropdownProps {
+  id: string;
+  label: string;
+  teluguLabel?: string;
+  icon?: React.ReactNode;
+  placeholder: string;
+  options: DropdownOption[];
+  selectedValue: string | number | '';
+  selectedLabel?: string;
+  onSelect: (option: DropdownOption | null) => void;
+  isLoading?: boolean;
+  disabled?: boolean;
+  disabledReason?: string;
+  required?: boolean;
+  error?: string | null;
+  allowCustomInput?: boolean;
+  emptyMessage?: string;
+}
+
+const SearchableDropdown: React.FC<SearchableDropdownProps> = ({
+  id,
+  label,
+  teluguLabel,
+  icon,
+  placeholder,
+  options,
+  selectedValue,
+  selectedLabel,
+  onSelect,
+  isLoading = false,
+  disabled = false,
+  disabledReason,
+  required = false,
+  error = null,
+  allowCustomInput = false,
+  emptyMessage = 'No options available',
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isOpen]);
+
+  // Focus search input on open
+  useEffect(() => {
+    if (isOpen && searchInputRef.current) {
+      setTimeout(() => searchInputRef.current?.focus(), 50);
+    } else {
+      setSearchTerm('');
+    }
+  }, [isOpen]);
+
+  // Filter options based on search query
+  const filteredOptions = options.filter((opt) => {
+    const q = searchTerm.toLowerCase().trim();
+    if (!q) return true;
+    const matchLabel = opt.label.toLowerCase().includes(q);
+    const matchSublabel = opt.sublabel ? opt.sublabel.toLowerCase().includes(q) : false;
+    const matchBadge = opt.badge ? opt.badge.toLowerCase().includes(q) : false;
+    return matchLabel || matchSublabel || matchBadge;
+  });
+
+  const displaySelected = selectedLabel || options.find((o) => o.value === selectedValue)?.label || '';
+
+  const handleClear = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelect(null);
+  };
+
+  const handleCustomSubmit = () => {
+    const clean = searchTerm.trim();
+    if (clean) {
+      onSelect({
+        value: clean,
+        label: clean,
+        sublabel: 'Custom entered',
+      });
+      setIsOpen(false);
+    }
+  };
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center justify-between">
+        <span className="flex items-center gap-1.5">
+          {icon && <span className="text-slate-400">{icon}</span>}
+          <span>{label}</span>
+          {teluguLabel && <span className="text-slate-400 font-telugu">({teluguLabel})</span>}
+          {required && <span className="text-rose-500">*</span>}
+        </span>
+        {isLoading && (
+          <span className="flex items-center gap-1 text-[10px] text-brand-600 dark:text-brand-400 font-medium">
+            <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+            Loading...
+          </span>
+        )}
+      </label>
+
+      {/* Trigger Button */}
+      <button
+        type="button"
+        id={id}
+        disabled={disabled || isLoading}
+        onClick={() => setIsOpen((prev) => !prev)}
+        className={`w-full px-3.5 py-2.5 text-xs text-left bg-slate-50 dark:bg-slate-800 border rounded-xl flex items-center justify-between transition-all ${
+          disabled
+            ? 'opacity-60 cursor-not-allowed border-slate-200 dark:border-slate-800 text-slate-400'
+            : error
+            ? 'border-rose-400 focus:ring-2 focus:ring-rose-500/20'
+            : isOpen
+            ? 'border-brand-500 ring-2 ring-brand-500/20'
+            : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
+        }`}
+      >
+        <span className={`truncate ${displaySelected ? 'text-slate-900 dark:text-slate-100 font-medium' : 'text-slate-400'}`}>
+          {displaySelected || (disabled && disabledReason ? disabledReason : placeholder)}
+        </span>
+
+        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+          {displaySelected && !disabled && (
+            <span
+              onClick={handleClear}
+              className="p-0.5 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+              title="Clear selection"
+            >
+              <X className="w-3 h-3" />
+            </span>
+          )}
+          <ChevronDown
+            className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+          />
+        </div>
+      </button>
+
+      {/* Error message */}
+      {error && (
+        <p className="text-[11px] text-rose-500 mt-1 flex items-center gap-1">
+          <AlertCircle className="w-3 h-3 shrink-0" />
+          <span>{error}</span>
+        </p>
+      )}
+
+      {/* Popover Dropdown */}
+      {isOpen && !disabled && (
+        <div className="absolute z-50 left-0 right-0 mt-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden animate-in fade-in-50 zoom-in-95 duration-100">
+          {/* Search Input Bar */}
+          <div className="p-2 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2">
+            <Search className="w-3.5 h-3.5 text-slate-400 shrink-0 ml-1" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search / వెతకండి..."
+              className="w-full text-xs bg-transparent border-0 focus:outline-none text-slate-900 dark:text-slate-100 placeholder-slate-400"
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          {/* Options List */}
+          <div className="max-h-56 overflow-y-auto p-1 divide-y divide-slate-100/50 dark:divide-slate-800/50">
+            {filteredOptions.length > 0 ? (
+              filteredOptions.map((opt) => {
+                const isSelected = opt.value === selectedValue || opt.label === displaySelected;
+                return (
+                  <button
+                    key={String(opt.value)}
+                    type="button"
+                    onClick={() => {
+                      onSelect(opt);
+                      setIsOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 text-left rounded-lg text-xs flex items-center justify-between transition-colors ${
+                      isSelected
+                        ? 'bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 font-semibold'
+                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0 pr-2">
+                      <div className="truncate font-medium">{opt.label}</div>
+                      {opt.sublabel && (
+                        <div className="text-[10px] text-slate-400 dark:text-slate-500 truncate">
+                          {opt.sublabel}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {opt.badge && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200/60 dark:border-slate-700/60">
+                          {opt.badge}
+                        </span>
+                      )}
+                      {isSelected && <Check className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />}
+                    </div>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="py-4 px-3 text-center text-xs text-slate-400">
+                <p>{emptyMessage}</p>
+                {allowCustomInput && searchTerm.trim() && (
+                  <button
+                    type="button"
+                    onClick={handleCustomSubmit}
+                    className="mt-2 inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-950/50 hover:bg-brand-100 dark:hover:bg-brand-900/50 rounded-lg transition-colors border border-brand-200 dark:border-brand-800"
+                  >
+                    <span>Use &ldquo;{searchTerm.trim()}&rdquo;</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const UploadPDF: React.FC = () => {
   const navigate = useNavigate();
@@ -38,36 +292,25 @@ export const UploadPDF: React.FC = () => {
   // Document state
   const [file, setFile] = useState<File | null>(null);
 
-  // Manual Location Details (Required)
-  const [district, setDistrict] = useState('');
-  const [constituency, setConstituency] = useState('');
-  const [area, setArea] = useState('');
-  const [wardNumber, setWardNumber] = useState('');
+  // Cascading Location Hierarchy State
+  const [districts, setDistricts] = useState<District[]>([]);
+  const [selectedDistrictId, setSelectedDistrictId] = useState<number | ''>('');
+  const [selectedDistrictName, setSelectedDistrictName] = useState('');
+  const [loadingDistricts, setLoadingDistricts] = useState(false);
 
-  const [availableLocations, setAvailableLocations] = useState<{
-    districts: string[];
-    constituencies: string[];
-    wards: string[];
-  }>({
-    districts: [],
-    constituencies: [],
-    wards: [],
-  });
+  const [constituencies, setConstituencies] = useState<Constituency[]>([]);
+  const [selectedConstituencyId, setSelectedConstituencyId] = useState<number | ''>('');
+  const [selectedConstituencyName, setSelectedConstituencyName] = useState('');
+  const [loadingConstituencies, setLoadingConstituencies] = useState(false);
 
-  useEffect(() => {
-    geoService.getLocations().then((locs) => {
-      setAvailableLocations(locs);
-      if (locs.districts.length === 1 && !district) {
-        setDistrict(locs.districts[0]);
-      }
-      if (locs.constituencies.length === 1 && !constituency) {
-        setConstituency(locs.constituencies[0]);
-      }
-      if (locs.wards.length === 1 && !wardNumber) {
-        setWardNumber(locs.wards[0]);
-      }
-    }).catch((e) => console.warn('Could not fetch locations:', e));
-  }, []);
+  const [areas, setAreas] = useState<{ name: string }[]>([]);
+  const [selectedArea, setSelectedArea] = useState('');
+  const [loadingAreas, setLoadingAreas] = useState(false);
+
+  const [wards, setWards] = useState<Ward[]>([]);
+  const [selectedWardId, setSelectedWardId] = useState<number | ''>('');
+  const [selectedWardNumber, setSelectedWardNumber] = useState('');
+  const [loadingWards, setLoadingWards] = useState(false);
 
   // Touched state for field-specific error display
   const [touched, setTouched] = useState({
@@ -76,6 +319,129 @@ export const UploadPDF: React.FC = () => {
     area: false,
     wardNumber: false,
   });
+
+  // 1. Initial Load: Fetch all available Districts from Geographic Management
+  useEffect(() => {
+    let isMounted = true;
+    setLoadingDistricts(true);
+    geoService.getCascadingDistricts()
+      .then((data) => {
+        if (!isMounted) return;
+        setDistricts(data || []);
+        if (data && data.length === 1) {
+          setSelectedDistrictId(data[0].id);
+          setSelectedDistrictName(data[0].name);
+        }
+      })
+      .catch((e) => console.warn('Could not fetch districts:', e))
+      .finally(() => {
+        if (isMounted) setLoadingDistricts(false);
+      });
+    return () => { isMounted = false; };
+  }, []);
+
+  // 2. Cascade 1: When District changes, fetch Constituencies belonging to that District
+  useEffect(() => {
+    if (!selectedDistrictId) {
+      setConstituencies([]);
+      setSelectedConstituencyId('');
+      setSelectedConstituencyName('');
+      setAreas([]);
+      setSelectedArea('');
+      setWards([]);
+      setSelectedWardId('');
+      setSelectedWardNumber('');
+      return;
+    }
+
+    let isMounted = true;
+    setLoadingConstituencies(true);
+    setSelectedConstituencyId('');
+    setSelectedConstituencyName('');
+    setAreas([]);
+    setSelectedArea('');
+    setWards([]);
+    setSelectedWardId('');
+    setSelectedWardNumber('');
+
+    geoService.getCascadingConstituencies(Number(selectedDistrictId), selectedDistrictName)
+      .then((data) => {
+        if (!isMounted) return;
+        setConstituencies(data || []);
+        if (data && data.length === 1) {
+          setSelectedConstituencyId(data[0].id);
+          setSelectedConstituencyName(data[0].name);
+        }
+      })
+      .catch((e) => console.warn('Could not fetch constituencies:', e))
+      .finally(() => {
+        if (isMounted) setLoadingConstituencies(false);
+      });
+    return () => { isMounted = false; };
+  }, [selectedDistrictId]);
+
+  // 3. Cascade 2: When Constituency changes, fetch Areas/Villages belonging to that Constituency
+  useEffect(() => {
+    if (!selectedConstituencyId) {
+      setAreas([]);
+      setSelectedArea('');
+      setWards([]);
+      setSelectedWardId('');
+      setSelectedWardNumber('');
+      return;
+    }
+
+    let isMounted = true;
+    setLoadingAreas(true);
+    setSelectedArea('');
+    setWards([]);
+    setSelectedWardId('');
+    setSelectedWardNumber('');
+
+    geoService.getCascadingAreas(Number(selectedConstituencyId), selectedConstituencyName)
+      .then((data) => {
+        if (!isMounted) return;
+        setAreas(data || []);
+        if (data && data.length === 1) {
+          setSelectedArea(data[0].name);
+        }
+      })
+      .catch((e) => console.warn('Could not fetch areas:', e))
+      .finally(() => {
+        if (isMounted) setLoadingAreas(false);
+      });
+    return () => { isMounted = false; };
+  }, [selectedConstituencyId]);
+
+  // 4. Cascade 3: When Area changes, fetch Wards associated with that Area & Constituency
+  useEffect(() => {
+    if (!selectedConstituencyId) {
+      setWards([]);
+      setSelectedWardId('');
+      setSelectedWardNumber('');
+      return;
+    }
+
+    let isMounted = true;
+    setLoadingWards(true);
+    setSelectedWardId('');
+    setSelectedWardNumber('');
+
+    geoService.getCascadingWards(Number(selectedConstituencyId), selectedArea)
+      .then((data) => {
+        if (!isMounted) return;
+        setWards(data || []);
+        if (data && data.length === 1) {
+          setSelectedWardId(data[0].id);
+          setSelectedWardNumber(data[0].ward_number);
+        }
+      })
+      .catch((e) => console.warn('Could not fetch wards:', e))
+      .finally(() => {
+        if (isMounted) setLoadingWards(false);
+      });
+    return () => { isMounted = false; };
+  }, [selectedConstituencyId, selectedArea]);
 
   // Pipeline & AI Translation settings
   const defaultOllama = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_OLLAMA_URL) || '';
@@ -97,10 +463,10 @@ export const UploadPDF: React.FC = () => {
   const [success, setSuccess] = useState<string | null>(null);
 
   // Field validation checks
-  const isDistrictValid = district.trim().length > 0;
-  const isConstituencyValid = constituency.trim().length > 0;
-  const isAreaValid = area.trim().length > 0;
-  const isWardValid = wardNumber.trim().length > 0;
+  const isDistrictValid = Boolean(selectedDistrictId || selectedDistrictName.trim());
+  const isConstituencyValid = Boolean(selectedConstituencyId || selectedConstituencyName.trim());
+  const isAreaValid = selectedArea.trim().length > 0;
+  const isWardValid = Boolean(selectedWardId || selectedWardNumber.trim());
   const isFileValid = file !== null;
 
   const isFormValid = isFileValid && isDistrictValid && isConstituencyValid && isAreaValid && isWardValid;
@@ -114,7 +480,7 @@ export const UploadPDF: React.FC = () => {
     });
 
     if (!isFormValid || !file) {
-      setError('Please fill in all required location details and select a PDF document.');
+      setError('Please select all required geographic details (District, Constituency, Area, Ward) and a PDF document.');
       return;
     }
 
@@ -127,13 +493,26 @@ export const UploadPDF: React.FC = () => {
     setProcessStage('Uploading original PDF document and location metadata to server...');
 
     try {
-      logger.info('Starting document upload', { filename: file.name, size: file.size, district, constituency, ward: wardNumber });
+      logger.info('Starting document upload with geographic details', {
+        filename: file.name,
+        size: file.size,
+        district_id: selectedDistrictId,
+        district: selectedDistrictName,
+        constituency_id: selectedConstituencyId,
+        constituency: selectedConstituencyName,
+        area: selectedArea,
+        ward_id: selectedWardId,
+        ward: selectedWardNumber
+      });
       
       const uploadRes = await documentService.uploadPdf(file, {
-        district: district.trim(),
-        constituency: constituency.trim(),
-        area: area.trim(),
-        ward_number: wardNumber.trim(),
+        district: selectedDistrictName.trim(),
+        district_id: selectedDistrictId ? Number(selectedDistrictId) : undefined,
+        constituency: selectedConstituencyName.trim(),
+        constituency_id: selectedConstituencyId ? Number(selectedConstituencyId) : undefined,
+        area: selectedArea.trim(),
+        ward_number: selectedWardNumber.trim(),
+        ward_id: selectedWardId ? Number(selectedWardId) : undefined,
         ollamaUrl,
         modelName,
         useAi,
@@ -198,7 +577,7 @@ export const UploadPDF: React.FC = () => {
         setActiveDoc(completedDoc);
         const count = completedDoc.metadata?.records_count || completedDoc.records?.length || 0;
         setSuccess(
-          `"${file.name}" processed! ${count.toLocaleString()} voter records linked to ${area.trim()} (Ward ${wardNumber.trim()}).`
+          `"${file.name}" processed! ${count.toLocaleString()} voter records linked to ${selectedArea.trim()} (Ward ${selectedWardNumber.trim()}).`
         );
       } else {
         setSuccess(`"${file.name}" uploaded successfully with location details and processing in background!`);
@@ -248,6 +627,37 @@ export const UploadPDF: React.FC = () => {
     }
   };
 
+  // Convert models to DropdownOptions
+  const districtOptions: DropdownOption[] = districts.map((d) => ({
+    value: d.id,
+    label: d.name,
+    sublabel: d.code ? `Code: ${d.code}` : undefined,
+    badge: d.state ? d.state : undefined,
+    raw: d,
+  }));
+
+  const constituencyOptions: DropdownOption[] = constituencies.map((c) => ({
+    value: c.id,
+    label: c.name,
+    sublabel: c.code ? `Code: ${c.code}` : undefined,
+    badge: c.wards_count ? `${c.wards_count} Wards` : undefined,
+    raw: c,
+  }));
+
+  const areaOptions: DropdownOption[] = areas.map((a) => ({
+    value: a.name,
+    label: a.name,
+    raw: a,
+  }));
+
+  const wardOptions: DropdownOption[] = wards.map((w) => ({
+    value: w.id,
+    label: `Ward ${w.ward_number} (వార్డు ${w.ward_number})`,
+    sublabel: w.area_name ? `Area: ${w.area_name}` : undefined,
+    badge: `#${w.ward_number}`,
+    raw: w,
+  }));
+
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       {/* Page Header */}
@@ -256,7 +666,7 @@ export const UploadPDF: React.FC = () => {
           ఓటర్ డాక్యుమెంట్ అప్‌లోడ్ & వెలికితీత (Upload Voter Document)
         </h1>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Upload any voter document or electoral roll up to 300 MB. Pages are extracted independently and asynchronously in the background. Completed pages and records become available immediately.
+          Upload any voter document or electoral roll up to 300 MB. Select geographic details through dynamic dependent dropdowns. Pages are extracted independently and asynchronously in the background.
         </p>
       </div>
 
@@ -387,7 +797,7 @@ export const UploadPDF: React.FC = () => {
         )}
 
         {/* ========================================================= */}
-        {/* Document Location Details (ప్రాంత వివరాలు) */}
+        {/* Document Details: Geographic Dropdowns (ప్రాంత వివరాలు) */}
         {/* ========================================================= */}
         <div className="pt-6 border-t border-slate-100 dark:border-slate-800 space-y-4">
           <div className="flex items-center justify-between">
@@ -397,10 +807,10 @@ export const UploadPDF: React.FC = () => {
               </div>
               <div>
                 <h4 className="text-xs font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wider">
-                  Document Location Details (ప్రాంత వివరాలు)
+                  Document Details – Geographic Dropdowns (ప్రాంత వివరాలు)
                 </h4>
                 <p className="text-[11px] text-slate-400">
-                  Enter manual district, constituency, area and ward details to link with voter records (All fields required *)
+                  Select District &rarr; Constituency &rarr; Area &rarr; Ward to link records accurately. All dropdown values are fetched live from Geographic Management.
                 </p>
               </div>
             </div>
@@ -409,145 +819,123 @@ export const UploadPDF: React.FC = () => {
             </span>
           </div>
 
-          {/* 2-Column Responsive Grid */}
+          {/* 2-Column Responsive Dependent Dropdowns Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-            {/* Field 1: District (జిల్లా) */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center justify-between">
-                <span>District (జిల్లా) <span className="text-rose-500">*</span></span>
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  list="districts-list"
-                  value={district}
-                  onChange={(e) => {
-                    setDistrict(e.target.value);
-                    if (!touched.district) setTouched((t) => ({ ...t, district: true }));
-                  }}
-                  onBlur={() => setTouched((t) => ({ ...t, district: true }))}
-                  placeholder="Enter or select district name (జిల్లా)"
-                  className={`w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all ${
-                    touched.district && !isDistrictValid
-                      ? 'border-rose-400 focus:ring-rose-500/20'
-                      : 'border-slate-200 dark:border-slate-700 focus:ring-brand-500/20 focus:border-brand-500'
-                  }`}
-                />
-                <datalist id="districts-list">
-                  {availableLocations.districts.map((d) => (
-                    <option key={d} value={d} />
-                  ))}
-                </datalist>
-              </div>
-              {touched.district && !isDistrictValid && (
-                <p className="text-[11px] text-rose-500 mt-1 flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3 shrink-0" />
-                  <span>District name is required.</span>
-                </p>
-              )}
-            </div>
+            {/* 1. District (జిల్లా) */}
+            <SearchableDropdown
+              id="geo-district-dropdown"
+              label="District"
+              teluguLabel="జిల్లా"
+              icon={<Landmark className="w-3.5 h-3.5" />}
+              placeholder="Select District (జిల్లా ఎంచుకోండి)"
+              options={districtOptions}
+              selectedValue={selectedDistrictId}
+              selectedLabel={selectedDistrictName}
+              isLoading={loadingDistricts}
+              required={true}
+              error={touched.district && !isDistrictValid ? 'District is required.' : null}
+              emptyMessage="No districts found in Geographic Management."
+              onSelect={(opt) => {
+                if (opt) {
+                  setSelectedDistrictId(Number(opt.value));
+                  setSelectedDistrictName(opt.label);
+                } else {
+                  setSelectedDistrictId('');
+                  setSelectedDistrictName('');
+                }
+                setTouched((t) => ({ ...t, district: true }));
+              }}
+            />
 
-            {/* Field 2: Constituency (నియోజకవర్గం) */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center justify-between">
-                <span>Constituency (నియోజకవర్గం) <span className="text-rose-500">*</span></span>
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  list="constituencies-list"
-                  value={constituency}
-                  onChange={(e) => {
-                    setConstituency(e.target.value);
-                    if (!touched.constituency) setTouched((t) => ({ ...t, constituency: true }));
-                  }}
-                  onBlur={() => setTouched((t) => ({ ...t, constituency: true }))}
-                  placeholder="Enter or select constituency (నియోజకవర్గం)"
-                  className={`w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all ${
-                    touched.constituency && !isConstituencyValid
-                      ? 'border-rose-400 focus:ring-rose-500/20'
-                      : 'border-slate-200 dark:border-slate-700 focus:ring-brand-500/20 focus:border-brand-500'
-                  }`}
-                />
-                <datalist id="constituencies-list">
-                  {availableLocations.constituencies.map((c) => (
-                    <option key={c} value={c} />
-                  ))}
-                </datalist>
-              </div>
-              {touched.constituency && !isConstituencyValid && (
-                <p className="text-[11px] text-rose-500 mt-1 flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3 shrink-0" />
-                  <span>Constituency name is required.</span>
-                </p>
-              )}
-            </div>
+            {/* 2. Constituency (నియోజకవర్గం) */}
+            <SearchableDropdown
+              id="geo-constituency-dropdown"
+              label="Constituency"
+              teluguLabel="నియోజకవర్గం"
+              icon={<Building2 className="w-3.5 h-3.5" />}
+              placeholder="Select Constituency (నియోజకవర్గం ఎంచుకోండి)"
+              options={constituencyOptions}
+              selectedValue={selectedConstituencyId}
+              selectedLabel={selectedConstituencyName}
+              isLoading={loadingConstituencies}
+              disabled={!selectedDistrictId}
+              disabledReason="Select District first"
+              required={true}
+              error={touched.constituency && !isConstituencyValid ? 'Constituency is required.' : null}
+              emptyMessage={selectedDistrictId ? 'No constituencies found for this district.' : 'Select District first.'}
+              onSelect={(opt) => {
+                if (opt) {
+                  setSelectedConstituencyId(Number(opt.value));
+                  setSelectedConstituencyName(opt.label);
+                } else {
+                  setSelectedConstituencyId('');
+                  setSelectedConstituencyName('');
+                }
+                setTouched((t) => ({ ...t, constituency: true }));
+              }}
+            />
 
-            {/* Field 3: Area / Village (ప్రాంతం / గ్రామం) */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center justify-between">
-                <span>Area / Village (ప్రాంతం / గ్రామం) <span className="text-rose-500">*</span></span>
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  value={area}
-                  onChange={(e) => {
-                    setArea(e.target.value);
-                    if (!touched.area) setTouched((t) => ({ ...t, area: true }));
-                  }}
-                  onBlur={() => setTouched((t) => ({ ...t, area: true }))}
-                  placeholder="Enter area / village name (ప్రాంతం / గ్రామం)"
-                  className={`w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all ${
-                    touched.area && !isAreaValid
-                      ? 'border-rose-400 focus:ring-rose-500/20'
-                      : 'border-slate-200 dark:border-slate-700 focus:ring-brand-500/20 focus:border-brand-500'
-                  }`}
-                />
-              </div>
-              {touched.area && !isAreaValid && (
-                <p className="text-[11px] text-rose-500 mt-1 flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3 shrink-0" />
-                  <span>Area or village name is required.</span>
-                </p>
-              )}
-            </div>
+            {/* 3. Area / Village (ప్రాంతం / గ్రామం) */}
+            <SearchableDropdown
+              id="geo-area-dropdown"
+              label="Area / Village"
+              teluguLabel="ప్రాంతం / గ్రామం"
+              icon={<Home className="w-3.5 h-3.5" />}
+              placeholder="Select or enter Area/Village (ప్రాంతం ఎంచుకోండి)"
+              options={areaOptions}
+              selectedValue={selectedArea}
+              selectedLabel={selectedArea}
+              isLoading={loadingAreas}
+              disabled={!selectedConstituencyId}
+              disabledReason="Select Constituency first"
+              required={true}
+              allowCustomInput={true}
+              error={touched.area && !isAreaValid ? 'Area / Village is required.' : null}
+              emptyMessage={selectedConstituencyId ? 'No areas registered. Type name to add custom.' : 'Select Constituency first.'}
+              onSelect={(opt) => {
+                if (opt) {
+                  setSelectedArea(opt.label);
+                } else {
+                  setSelectedArea('');
+                }
+                setTouched((t) => ({ ...t, area: true }));
+              }}
+            />
 
-            {/* Field 4: Ward Number (వార్డు నంబర్) */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center justify-between">
-                <span>Ward Number (వార్డు నంబర్) <span className="text-rose-500">*</span></span>
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  list="wards-list"
-                  value={wardNumber}
-                  onChange={(e) => {
-                    setWardNumber(e.target.value);
-                    if (!touched.wardNumber) setTouched((t) => ({ ...t, wardNumber: true }));
-                  }}
-                  onBlur={() => setTouched((t) => ({ ...t, wardNumber: true }))}
-                  placeholder="Enter or select ward number (వార్డు నంబర్)"
-                  className={`w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all ${
-                    touched.wardNumber && !isWardValid
-                      ? 'border-rose-400 focus:ring-rose-500/20'
-                      : 'border-slate-200 dark:border-slate-700 focus:ring-brand-500/20 focus:border-brand-500'
-                  }`}
-                />
-                <datalist id="wards-list">
-                  {availableLocations.wards.map((w) => (
-                    <option key={w} value={w} />
-                  ))}
-                </datalist>
-              </div>
-              {touched.wardNumber && !isWardValid && (
-                <p className="text-[11px] text-rose-500 mt-1 flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3 shrink-0" />
-                  <span>Ward number is required.</span>
-                </p>
-              )}
-            </div>
+            {/* 4. Ward Number (వార్డు నంబర్) */}
+            <SearchableDropdown
+              id="geo-ward-dropdown"
+              label="Ward Number"
+              teluguLabel="వార్డు నంబర్"
+              icon={<Hash className="w-3.5 h-3.5" />}
+              placeholder="Select Ward Number (వార్డు ఎంచుకోండి)"
+              options={wardOptions}
+              selectedValue={selectedWardId}
+              selectedLabel={selectedWardNumber ? `Ward ${selectedWardNumber}` : ''}
+              isLoading={loadingWards}
+              disabled={!selectedConstituencyId}
+              disabledReason="Select Constituency first"
+              required={true}
+              allowCustomInput={true}
+              error={touched.wardNumber && !isWardValid ? 'Ward number is required.' : null}
+              emptyMessage={selectedConstituencyId ? 'No wards registered for this area. Type number to add.' : 'Select Constituency first.'}
+              onSelect={(opt) => {
+                if (opt) {
+                  if (typeof opt.value === 'number') {
+                    setSelectedWardId(opt.value);
+                    const rawWard = opt.raw as Ward | undefined;
+                    setSelectedWardNumber(rawWard?.ward_number || String(opt.label).replace(/^Ward\s*/i, ''));
+                  } else {
+                    setSelectedWardId('');
+                    setSelectedWardNumber(String(opt.value).replace(/^Ward\s*/i, ''));
+                  }
+                } else {
+                  setSelectedWardId('');
+                  setSelectedWardNumber('');
+                }
+                setTouched((t) => ({ ...t, wardNumber: true }));
+              }}
+            />
           </div>
         </div>
 
@@ -633,7 +1021,7 @@ export const UploadPDF: React.FC = () => {
             <p className="text-[11px] text-slate-400 text-center mt-2">
               {!file
                 ? 'Please select a PDF file and complete location details above to proceed.'
-                : 'Please complete all required location fields (District, Constituency, Area, Ward) to enable upload.'}
+                : 'Please select all required geographic dropdowns (District, Constituency, Area, Ward) to enable upload.'}
             </p>
           )}
         </div>
@@ -670,3 +1058,4 @@ export const UploadPDF: React.FC = () => {
     </div>
   );
 };
+

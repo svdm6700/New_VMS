@@ -1320,57 +1320,174 @@ def admin_delete_user(
     db.commit()
     return {"status": "deleted", "user_id": user_id}
 
-def validate_geographic_hierarchy(district: str, constituency: str, area: str, ward: str, db: Session) -> Optional[str]:
+# -------------------------------------------------------------
+# Cascading Geographic Selection Endpoints (Single Source of Truth)
+# -------------------------------------------------------------
+@app.get("/api/geo/districts", tags=["Geographic Selection"])
+def get_geo_districts(
+    current_user: Optional[UserModel] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """Fetch all available districts from Geographic Management."""
+    districts = db.query(DistrictModel).order_by(DistrictModel.name.asc()).all()
+    return [d.to_dict() for d in districts]
+
+
+@app.get("/api/geo/constituencies", tags=["Geographic Selection"])
+def get_geo_constituencies(
+    district_id: Optional[int] = None,
+    district_name: Optional[str] = None,
+    current_user: Optional[UserModel] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """Fetch constituencies filtered by district ID or district name."""
+    q = db.query(ConstituencyModel)
+    if district_id:
+        q = q.filter(ConstituencyModel.district_id == district_id)
+    elif district_name and district_name.strip() and district_name.strip().lower() != "all":
+        q = q.filter(ConstituencyModel.district_name.ilike(f"%{district_name.strip()}%"))
+    constituencies = q.order_by(ConstituencyModel.name.asc()).all()
+    return [c.to_dict() for c in constituencies]
+
+
+@app.get("/api/geo/areas", tags=["Geographic Selection"])
+def get_geo_areas(
+    constituency_id: Optional[int] = None,
+    constituency_name: Optional[str] = None,
+    current_user: Optional[UserModel] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """Fetch distinct areas / villages belonging to the selected constituency."""
+    q = db.query(WardModel.area_name)
+    if constituency_id:
+        q = q.filter(WardModel.constituency_id == constituency_id)
+    elif constituency_name and constituency_name.strip() and constituency_name.strip().lower() != "all":
+        q = q.filter(WardModel.constituency_name.ilike(f"%{constituency_name.strip()}%"))
+    
+    rows = q.filter(WardModel.area_name.isnot(None), WardModel.area_name != "").distinct().order_by(WardModel.area_name.asc()).all()
+    areas = [r[0].strip() for r in rows if r[0] and r[0].strip()]
+    return [{"name": a} for a in areas]
+
+
+@app.get("/api/geo/wards", tags=["Geographic Selection"])
+def get_geo_wards(
+    constituency_id: Optional[int] = None,
+    constituency_name: Optional[str] = None,
+    area_name: Optional[str] = None,
+    current_user: Optional[UserModel] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """Fetch wards associated with the selected constituency and area / village."""
+    q = db.query(WardModel)
+    if constituency_id:
+        q = q.filter(WardModel.constituency_id == constituency_id)
+    elif constituency_name and constituency_name.strip() and constituency_name.strip().lower() != "all":
+        q = q.filter(WardModel.constituency_name.ilike(f"%{constituency_name.strip()}%"))
+    
+    if area_name and area_name.strip() and area_name.strip().lower() != "all":
+        q = q.filter(WardModel.area_name.ilike(f"%{area_name.strip()}%"))
+        
+    wards = q.order_by(WardModel.ward_number.asc()).all()
+    return [w.to_dict() for w in wards]
+
+
+def validate_geographic_hierarchy(
+    district: str,
+    constituency: str,
+    area: str,
+    ward: str,
+    db: Session,
+    district_id: Optional[int] = None,
+    constituency_id: Optional[int] = None,
+    ward_id: Optional[int] = None
+) -> Dict[str, Any]:
     """
     Validate that district, constituency, area, and ward form a valid hierarchy
-    in Geographic Management. Returns None if valid, or an error string if invalid.
-    Supports both Telugu and English names.
+    in Geographic Management.
+    Returns a dict with 'valid': True and canonical resolved IDs and names,
+    or 'valid': False and 'error': '...' if invalid.
     """
     clean_d = district.strip()
     clean_c = constituency.strip()
     clean_a = area.strip()
     clean_w = ward.strip()
 
-    dist_recs = db.query(DistrictModel).all()
-    if not dist_recs:
-        return None
-
+    # 1. District Validation
     matched_dist = None
-    for d in dist_recs:
-        if clean_d.lower() in d.name.lower() or d.name.lower() in clean_d.lower():
-            matched_dist = d
-            break
-    if not matched_dist:
-        available = ", ".join(d.name for d in dist_recs)
-        return f"District '{clean_d}' is not recognized in Geographic Management. Available: {available}"
-
-    const_recs = db.query(ConstituencyModel).filter(ConstituencyModel.district_id == matched_dist.id).all()
-    if not const_recs:
-        const_recs = db.query(ConstituencyModel).all()
-
-    matched_const = None
-    for c in const_recs:
-        if clean_c.lower() in c.name.lower() or c.name.lower() in clean_c.lower():
-            matched_const = c
-            break
-    if not matched_const:
-        available = ", ".join(c.name for c in const_recs)
-        return f"Constituency '{clean_c}' is not part of district '{matched_dist.name}'. Available: {available}"
-
-    ward_recs = db.query(WardModel).filter(WardModel.constituency_id == matched_const.id).all()
-    if ward_recs:
-        matched_ward = None
-        for w in ward_recs:
-            w_num_clean = re.sub(r'[^0-9a-zA-Z]', '', w.ward_number.lower())
-            input_w_clean = re.sub(r'[^0-9a-zA-Z]', '', clean_w.lower())
-            if w_num_clean == input_w_clean:
-                matched_ward = w
+    if district_id:
+        matched_dist = db.query(DistrictModel).filter(DistrictModel.id == district_id).first()
+        if not matched_dist:
+            return {"valid": False, "error": f"District ID #{district_id} does not exist in Geographic Management."}
+    else:
+        dist_recs = db.query(DistrictModel).all()
+        for d in dist_recs:
+            if clean_d.lower() in d.name.lower() or d.name.lower() in clean_d.lower():
+                matched_dist = d
                 break
-        if not matched_ward:
-            available_w = ", ".join(w.ward_number for w in ward_recs)
-            return f"Ward '{clean_w}' is not configured under constituency '{matched_const.name}'. Configured wards: {available_w}"
+        if not matched_dist and dist_recs:
+            available = ", ".join(d.name for d in dist_recs)
+            return {"valid": False, "error": f"District '{clean_d}' is not recognized in Geographic Management. Available: {available}"}
 
-    return None
+    # 2. Constituency Validation
+    matched_const = None
+    if constituency_id:
+        matched_const = db.query(ConstituencyModel).filter(ConstituencyModel.id == constituency_id).first()
+        if not matched_const:
+            return {"valid": False, "error": f"Constituency ID #{constituency_id} does not exist in Geographic Management."}
+        if matched_dist and matched_const.district_id and matched_const.district_id != matched_dist.id:
+            return {"valid": False, "error": f"Constituency '{matched_const.name}' belongs to district ID {matched_const.district_id}, not selected district '{matched_dist.name}'."}
+    else:
+        const_q = db.query(ConstituencyModel)
+        if matched_dist:
+            const_q = const_q.filter(ConstituencyModel.district_id == matched_dist.id)
+        const_recs = const_q.all()
+        for c in const_recs:
+            if clean_c.lower() in c.name.lower() or c.name.lower() in clean_c.lower():
+                matched_const = c
+                break
+        if not matched_const:
+            available = ", ".join(c.name for c in const_recs) if const_recs else "None"
+            dist_desc = f"district '{matched_dist.name}'" if matched_dist else "selected district"
+            return {"valid": False, "error": f"Constituency '{clean_c}' is not part of {dist_desc}. Available: {available}"}
+
+    # 3. Ward & Area Validation
+    matched_ward = None
+    if ward_id:
+        matched_ward = db.query(WardModel).filter(WardModel.id == ward_id).first()
+        if not matched_ward:
+            return {"valid": False, "error": f"Ward ID #{ward_id} does not exist in Geographic Management."}
+        if matched_const and matched_ward.constituency_id and matched_ward.constituency_id != matched_const.id:
+            return {"valid": False, "error": f"Ward #{matched_ward.ward_number} does not belong to constituency '{matched_const.name}'."}
+        if clean_a and matched_ward.area_name and clean_a.lower() not in matched_ward.area_name.lower() and matched_ward.area_name.lower() not in clean_a.lower():
+            return {"valid": False, "error": f"Ward #{matched_ward.ward_number} is assigned to area '{matched_ward.area_name}', but '{clean_a}' was specified."}
+    else:
+        ward_q = db.query(WardModel)
+        if matched_const:
+            ward_q = ward_q.filter(WardModel.constituency_id == matched_const.id)
+        if clean_a:
+            ward_q = ward_q.filter(WardModel.area_name.ilike(f"%{clean_a}%"))
+        ward_recs = ward_q.all()
+        if ward_recs:
+            for w in ward_recs:
+                w_num_clean = re.sub(r'[^0-9a-zA-Z]', '', w.ward_number.lower())
+                input_w_clean = re.sub(r'[^0-9a-zA-Z]', '', clean_w.lower())
+                if w_num_clean == input_w_clean:
+                    matched_ward = w
+                    break
+            if not matched_ward:
+                available_w = ", ".join(w.ward_number for w in ward_recs)
+                return {"valid": False, "error": f"Ward '{clean_w}' is not configured under area '{clean_a}' in constituency '{matched_const.name}'. Configured wards: {available_w}"}
+
+    return {
+        "valid": True,
+        "district_id": matched_dist.id if matched_dist else district_id,
+        "district_name": matched_dist.name if matched_dist else clean_d,
+        "constituency_id": matched_const.id if matched_const else constituency_id,
+        "constituency_name": matched_const.name if matched_const else clean_c,
+        "area_name": matched_ward.area_name if (matched_ward and matched_ward.area_name) else clean_a,
+        "ward_id": matched_ward.id if matched_ward else ward_id,
+        "ward_number": matched_ward.ward_number if matched_ward else clean_w
+    }
 
 
 # -------------------------------------------------------------
@@ -1381,9 +1498,12 @@ def validate_geographic_hierarchy(district: str, constituency: str, area: str, w
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    district_id: Optional[int] = Form(None),
     district: Optional[str] = Form(None),
+    constituency_id: Optional[int] = Form(None),
     constituency: Optional[str] = Form(None),
     area: Optional[str] = Form(None),
+    ward_id: Optional[int] = Form(None),
     ward_number: Optional[str] = Form(None),
     ollama_url: Optional[str] = Query(None),
     model_name: Optional[str] = Query(None),
@@ -1420,9 +1540,12 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Ward Number (వార్డు నంబర్) is required.")
 
     # Validate geographic hierarchy against Geographic Management
-    geo_err = validate_geographic_hierarchy(clean_district, clean_constituency, clean_area, clean_ward, db)
-    if geo_err:
-        raise HTTPException(status_code=400, detail=geo_err)
+    geo_res = validate_geographic_hierarchy(
+        clean_district, clean_constituency, clean_area, clean_ward, db,
+        district_id=district_id, constituency_id=constituency_id, ward_id=ward_id
+    )
+    if not geo_res.get("valid"):
+        raise HTTPException(status_code=400, detail=geo_res.get("error"))
 
     # Geographic restriction check for Admin role
     if not is_super_admin(current_user):
@@ -1623,10 +1746,13 @@ async def upload_document(
         processing_error=None,
         uploaded_at=datetime.now(timezone.utc),
         uploaded_by=user_id,
-        district=clean_district,
-        constituency=clean_constituency,
-        area=clean_area,
-        ward_number=clean_ward
+        district_id=geo_res.get("district_id"),
+        district=geo_res.get("district_name", clean_district),
+        constituency_id=geo_res.get("constituency_id"),
+        constituency=geo_res.get("constituency_name", clean_constituency),
+        area=geo_res.get("area_name", clean_area),
+        ward_id=geo_res.get("ward_id"),
+        ward_number=geo_res.get("ward_number", clean_ward)
     )
     db.add(doc_entry)
     db.commit()

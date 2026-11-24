@@ -299,9 +299,12 @@ export interface DocumentResult {
 }
 
 export interface ProcessOptions {
+  district_id?: number;
   district?: string;
+  constituency_id?: number;
   constituency?: string;
   area?: string;
+  ward_id?: number;
   ward_number?: string;
   ollamaUrl?: string;
   modelName?: string;

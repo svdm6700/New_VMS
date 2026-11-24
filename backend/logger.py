@@ -38,8 +38,54 @@ LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", 30))
 LOG_LEVEL_NAME = os.getenv("LOG_LEVEL", "INFO").upper()
 DEFAULT_LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
 
-# Timezone for log filenames (IST = UTC+5:30)
+# Timezone for log filenames and day-wise folders (IST = UTC+5:30)
 LOG_TIMEZONE = timezone(timedelta(hours=5, minutes=30))
+
+
+def get_current_day_str() -> str:
+    """Return today's date formatted as DDMMYY. E.g. '241126' for 24 Nov 2026."""
+    return datetime.now(LOG_TIMEZONE).strftime("%d%m%y")
+
+
+def get_current_day_folder() -> Path:
+    """
+    Return the day-wise log directory path using DDMMYY format.
+    E.g. storage/logs/241126/
+    Creates directory on disk if it does not exist.
+    """
+    day_folder = LOGS_DIR / get_current_day_str()
+    day_folder.mkdir(parents=True, exist_ok=True)
+    return day_folder
+
+
+def _get_dated_filename(base_name: str) -> str:
+    """Return log filename with DDMMYY date suffix. E.g. 'backend_241126.log'"""
+    return f"{base_name}_{get_current_day_str()}.log"
+
+
+def cleanup_legacy_root_logs():
+    """
+    Cleans up old duplicate root log files from storage/logs/ that were previously written
+    outside day-wise folders, keeping the root directory clean.
+    """
+    try:
+        current_day_dir = get_current_day_folder()
+        for p in LOGS_DIR.iterdir():
+            if p.is_file() and p.name.endswith(".log"):
+                # Channel name without date suffix
+                base = re.sub(r'_\d{6}\.log$', '.log', p.name)
+                dest = current_day_dir / base
+                try:
+                    # If destination doesn't exist or is smaller, move/append lines
+                    if not dest.exists():
+                        p.replace(dest)
+                    else:
+                        p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
 # Sensitive fields to redact
 SENSITIVE_KEYS = {
@@ -69,13 +115,6 @@ def redact_sensitive_data(data: Any) -> Any:
         data = re.sub(r'(password|token|secret)=([^&]+)', r'\1=[REDACTED]', data, flags=re.IGNORECASE)
         return data
     return data
-
-
-def _get_dated_filename(base_name: str) -> str:
-    """Return log filename with DDMMYY date suffix. E.g. 'backend_241126.log'"""
-    now = datetime.now(LOG_TIMEZONE)
-    date_str = now.strftime("%d%m%y")
-    return f"{base_name}_{date_str}.log"
 
 
 class StructuredJsonFormatter(logging.Formatter):
@@ -113,11 +152,11 @@ class StructuredJsonFormatter(logging.Formatter):
         return json.dumps(log_entry, ensure_ascii=False, default=str)
 
 
-class DailyRotatingHandler(logging.Handler):
+class DayWiseRotatingHandler(logging.Handler):
     """
-    A handler that writes to a dated file (DDMMYY format).
-    Automatically switches to a new file when the date changes.
-    Thread-safe via locks inherited from logging.Handler.
+    A thread-safe handler that writes structured JSON logs exclusively into
+    day-wise folders (storage/logs/<DDMMYY>/<channel>.log).
+    Automatically switches to a new day folder when date rolls over at midnight IST.
     """
     def __init__(self, base_name: str, max_bytes: int = MAX_LOG_BYTES, encoding: str = "utf-8"):
         super().__init__()
@@ -128,11 +167,11 @@ class DailyRotatingHandler(logging.Handler):
         self._stream = None
 
     def _get_current_path(self) -> Path:
-        return LOGS_DIR / _get_dated_filename(self.base_name)
+        day_folder = get_current_day_folder()
+        return day_folder / f"{self.base_name}.log"
 
     def _open_stream(self):
-        path = self._get_current_path()
-        date_str = datetime.now(LOG_TIMEZONE).strftime("%d%m%y")
+        date_str = get_current_day_str()
         if self._stream and self._current_date == date_str:
             return
         if self._stream:
@@ -140,6 +179,7 @@ class DailyRotatingHandler(logging.Handler):
                 self._stream.close()
             except Exception:
                 pass
+        path = self._get_current_path()
         self._stream = open(path, "a", encoding=self.encoding)
         self._current_date = date_str
 
@@ -161,37 +201,26 @@ class DailyRotatingHandler(logging.Handler):
         super().close()
 
 
+# Backward compatibility alias
+DailyRotatingHandler = DayWiseRotatingHandler
+
+
 def _create_channel_logger(name: str, base_name: str, level=DEFAULT_LOG_LEVEL) -> logging.Logger:
-    """Create a configured logger channel that writes to storage/logs/<base_name>_DDMMYY.log."""
+    """
+    Create a configured logger channel that writes strictly to:
+    storage/logs/<DDMMYY>/<base_name>.log
+    Eliminates all duplicate root log files and duplicate handlers.
+    """
     logger = logging.getLogger(name)
     logger.setLevel(level)
     logger.propagate = False  # Avoid duplicate logs in root logger
 
     # Check if handlers already exist to avoid duplicates
     if not logger.handlers:
-        handler = DailyRotatingHandler(base_name)
+        handler = DayWiseRotatingHandler(base_name)
         handler.setLevel(level)
         handler.setFormatter(StructuredJsonFormatter())
         logger.addHandler(handler)
-
-        # Also log errors to errors_DDMMYY.log if this isn't already the errors logger
-        if base_name != "errors":
-            err_handler = DailyRotatingHandler("errors")
-            err_handler.setLevel(logging.ERROR)
-            err_handler.setFormatter(StructuredJsonFormatter())
-            logger.addHandler(err_handler)
-
-        # Also write to legacy static filename for backward compatibility
-        static_path = LOGS_DIR / f"{base_name}.log"
-        static_handler = RotatingFileHandler(
-            filename=str(static_path),
-            maxBytes=MAX_LOG_BYTES,
-            backupCount=5,
-            encoding="utf-8"
-        )
-        static_handler.setLevel(level)
-        static_handler.setFormatter(StructuredJsonFormatter())
-        logger.addHandler(static_handler)
 
     return logger
 
@@ -220,6 +249,9 @@ _CHANNEL_MAP: Dict[str, logging.Logger] = {
     "document_deletion": doc_deletion_logger,
     "doc_deletion": doc_deletion_logger,
 }
+
+# Run legacy cleanup on module load to clean up root log duplicates
+cleanup_legacy_root_logs()
 
 
 def log_event(channel_or_logger: Union[logging.Logger, str], *args: Any, **kwargs: Any):

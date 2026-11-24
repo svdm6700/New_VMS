@@ -124,9 +124,18 @@ export const documentService = {
   async uploadPdf(file: File, options?: ProcessOptions): Promise<{ id: string; status: string; filename: string }> {
     const formData = new FormData();
     formData.append('file', file);
+    if (options?.district_id !== undefined && options?.district_id !== null) {
+      formData.append('district_id', String(options.district_id));
+    }
     formData.append('district', options?.district || '');
+    if (options?.constituency_id !== undefined && options?.constituency_id !== null) {
+      formData.append('constituency_id', String(options.constituency_id));
+    }
     formData.append('constituency', options?.constituency || '');
     formData.append('area', options?.area || '');
+    if (options?.ward_id !== undefined && options?.ward_id !== null) {
+      formData.append('ward_id', String(options.ward_id));
+    }
     formData.append('ward_number', options?.ward_number || '');
 
     const res = await uploadApi.post('/api/documents/upload', formData, {
